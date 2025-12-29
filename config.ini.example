@@ -1,0 +1,64 @@
+# OBD 配置文件示例
+# 复制此文件为 config.ini 并填入你的实际配置
+
+[Dify]
+# Dify API密钥（从Dify控制台获取）
+# 格式: app-xxxxxxxxxxxxxxxx
+# 请不要在此文件中填写真实密钥，复制后删除注释
+api_key = app-your-api-key-here
+
+# Dify API基础URL
+# 云端Dify: https://api.dify.ai/v1
+# 本地Dify: http://localhost/v1
+base_url = https://api.dify.ai/v1
+
+# 响应模式：blocking（阻塞等待）或 streaming（流式响应）
+# blocking: 等待完整响应
+# streaming: 实时接收响应流
+response_mode = blocking
+
+# 请求超时时间（秒）
+# 根据问题复杂度调整，默认60秒
+timeout = 60
+
+[Excel]
+# Excel文件路径（相对或绝对路径）
+# 支持 .xlsx 和 .csv 格式
+file_path = questions.xlsx
+
+# 问题列名
+# 确保与Excel文件中的列名一致
+question_column = question
+
+# 答案列名
+# 确保与Excel文件中的列名一致
+answer_column = answer
+
+[Workflow]
+# 工作流ID（可选）
+# 如果要使用特定版本的工作流，请在此填写ID
+# workflow_id = your-workflow-id-here
+
+# 工作流输入变量名
+# 确保与Dify工作流中定义的输入变量名一致
+input_variable_name = query
+
+# 工作流输出变量名
+# 确保与Dify工作流输出的变量名一致
+output_variable_name = answer
+
+# 答案对比方法
+# exact: 精确匹配（忽略大小写和空格）
+# fuzzy: 模糊匹配（相似度≥0.8）
+# keyword: 关键词匹配（提取关键词检查包含关系）
+# auto: 自动选择（按exact → fuzzy → keyword顺序尝试）
+comparison_method = auto
+
+# 每次请求之间的延迟（秒）
+# 避免API限流，推荐0.5-1.0秒
+delay = 0.5
+
+[Output]
+# 结果输出文件路径
+# 将生成包含详细处理结果和统计信息的Excel文件
+file_path = results.xlsx
