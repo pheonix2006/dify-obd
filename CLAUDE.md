@@ -79,676 +79,282 @@ obd/
 
 **所有公共接口必须使用类型注解**：
 
-```python
-# ✅ 正确示例
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+- 数据模型使用 `@dataclass` 和完整类型注解
+- 函数参数和返回值都要明确类型
+- 使用 `Optional` 表示可选参数
+- 复杂类型使用 `Dict`, `List`, `Union` 等
 
-@dataclass
-class WorkflowConfig:
-    """工作流配置"""
-    api_key: str                    # 必需字段
-    base_url: str = "https://api.dify.ai/v1"  # 带默认值
-    response_mode: str = "blocking"
-    timeout: int = 60
-    user: str = "batch_processor"
+### 2. 类型安全原则
 
-class DifyWorkflowClient:
-    def __init__(self, config: WorkflowConfig) -> None:
-        self.config: WorkflowConfig = config
-        self.session: requests.Session = requests.Session()
+- 编译时类型检查 (MyPy)
+- 运行时类型验证
+- 避免使用 `Any` 类型
+- 使用泛型提高代码复用性
 
-    def execute_workflow(
-        self,
-        inputs: Dict[str, Any],
-        user: Optional[str] = None,
-        workflow_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        # ...
-```
+### 3. 数据模型设计
 
-### 2. 泛型使用规范
-
-```python
-from typing import TypeVar, Generic, List
-
-T = TypeVar('T')
-
-class ResultProcessor(Generic[T]):
-    """通用结果处理器"""
-
-    def process_results(self, results: List[T]) -> Dict[str, Any]:
-        count: int = len(results)
-        # 类型安全的处理
-        return {"total": count, "items": results}
-```
-
-### 3. Union 和 Optional 使用
-
-```python
-from typing import Union
-
-def handle_response(response: Union[Dict[str, Any], str]) -> str:
-    """处理联合类型响应"""
-    if isinstance(response, dict):
-        return response.get("answer", "")
-    return str(response)
-```
+- 使用 `@dataclass` 简化数据类定义
+- 所有字段都要有明确的类型注解
+- 必需字段使用具体类型，可选字段使用 `Optional`
+- 提供数据验证方法
 
 ---
 
-## 🏗️ 模块开发规范
+## 🏗️ 模块架构规范
 
-### 1. 数据层 (models.py)
+### 1. 分层架构原则
 
-**职责**: 定义核心数据结构，确保类型安全
+**应用层 (main.py)**:
+- 程序入口和配置管理
+- 错误处理和用户交互
+- 依赖注入和组件组装
 
-```python
-# ✅ 必须使用 dataclass
-from dataclasses import dataclass
-from typing import Optional
+**业务逻辑层 (processor/)**:
+- 核心业务流程编排
+- 状态管理和事务控制
+- 结果计算和统计
 
-@dataclass
-class QuestionAnswer:
-    """问题-答案对"""
-    question: str                   # 问题文本 (必需)
-    expected_answer: str            # 期望答案 (必需)
-    workflow_result: Optional[str] = None   # API 返回结果 (可选)
-    is_correct: bool = False        # 是否匹配 (默认 False)
-    match_type: Optional[str] = None       # 匹配类型 (可选)
-    workflow_run_id: Optional[str] = None   # 任务 ID (可选)
-    error: Optional[str] = None    # 错误信息 (可选)
+**服务层 (client/, comparator/)**:
+- 专业服务组件
+- 单一职责原则
+- 可复用的功能模块
 
-    # 验证方法
-    def validate(self) -> bool:
-        """验证数据有效性"""
-        if not self.question or not self.expected_answer:
-            return False
-        return True
-```
+**数据层 (models.py)**:
+- 数据结构定义
+- 类型安全保证
+- 序列化和反序列化
 
-### 2. 服务层 (client/, comparator/)
+### 2. 模块间交互
 
-**职责**: 提供专业服务，单一职责原则
+- **依赖注入**: 通过构造函数注入依赖
+- **接口隔离**: 定义清晰的协议和抽象类
+- **松耦合**: 模块间通过接口交互
+- **高内聚**: 相关功能集中在同一模块
 
-```python
-# ✅ client 模块示例
-from abc import ABC, abstractmethod
-from typing import Protocol
+### 3. 错误处理策略
 
-class APIClient(Protocol):
-    """API 客户端协议"""
-
-    @abstractmethod
-    def execute_workflow(self, inputs: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """执行工作流"""
-        pass
-
-class DifyWorkflowClient:
-    """Dify API 客户端实现"""
-
-    def __init__(self, config: WorkflowConfig) -> None:
-        self.config = config
-        self.session = self._create_session()
-
-    def _create_session(self) -> requests.Session:
-        """创建 HTTP 会话"""
-        session = requests.Session()
-        session.headers.update({
-            'Authorization': f'Bearer {self.config.api_key}',
-            'Content-Type': 'application/json'
-        })
-        return session
-
-    def execute_workflow(self, inputs: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """实现 API 调用"""
-        # ...
-```
-
-### 3. 业务层 (processor/)
-
-**职责**: 核心业务流程，协调服务层
-
-```python
-# ✅ processor 模块示例
-from typing import List, Dict, Any
-
-class WorkflowBatchProcessor:
-    """工作流批处理器"""
-
-    def __init__(self, config: WorkflowConfig, client: Optional[APIClient] = None):
-        self.config: WorkflowConfig = config
-        self.client: APIClient = client or DifyWorkflowClient(config)
-        self.comparator: AnswerComparator = AnswerComparator()
-
-    def process_excel(
-        self,
-        excel_path: str,
-        **kwargs
-    ) -> List[QuestionAnswer]:
-        """处理 Excel 文件"""
-        # 1. 加载文件
-        df: pd.DataFrame = self._load_excel(excel_path)
-
-        # 2. 批量处理
-        results: List[QuestionAnswer] = []
-        for idx, row in df.iterrows():
-            qa: QuestionAnswer = self._process_row(row, **kwargs)
-            results.append(qa)
-
-        return results
-```
-
-### 4. 应用层 (main.py)
-
-**职责**: 程序入口，配置管理，错误处理
-
-```python
-# ✅ main.py 示例
-from typing import Dict, Any
-from pathlib import Path
-
-def load_config(config_path: str = "config.ini") -> Dict[str, Any]:
-    """加载配置文件"""
-    config = configparser.ConfigParser()
-    config.read(config_path)
-    # ... 转换为字典返回
-
-def main() -> int:
-    """主函数"""
-    try:
-        # 1. 加载配置
-        config_data: Dict[str, Any] = load_config()
-
-        # 2. 创建配置对象
-        workflow_config: WorkflowConfig = WorkflowConfig(
-            api_key=config_data["api_key"],
-            base_url=config_data.get("base_url", "https://api.dify.ai/v1"),
-            # ...
-        )
-
-        # 3. 创建处理器
-        processor: WorkflowBatchProcessor = WorkflowBatchProcessor(workflow_config)
-
-        # 4. 执行处理
-        results: List[QuestionAnswer] = processor.process_excel(
-            excel_path=config_data["excel_path"]
-        )
-
-        # 5. 输出结果
-        stats: Dict[str, Any] = processor.calculate_statistics(results)
-        print(f"准确率: {stats['accuracy']:.1%}")
-
-        return 0
-
-    except FileNotFoundError as e:
-        print(f"文件不存在: {e}")
-        return 1
-    except ValueError as e:
-        print(f"配置错误: {e}")
-        return 1
-    except Exception as e:
-        print(f"未知错误: {e}")
-        return 1
-
-if __name__ == "__main__":
-    import sys
-    sys.exit(main())
-```
+- **分层错误处理**: 每层处理自己的异常
+- **自定义异常**: 定义项目特定的异常类型
+- **错误传播**: 向上传递关键错误信息
+- **优雅降级**: 错误情况下的备用方案
 
 ---
 
-## 🧪 测试驱动开发 (TDD) 规范
+## 🧪 测试驱动开发规范
 
 ### 1. 测试结构
 
-**测试目录必须与 src 平级**：
+**测试目录与 src 平级**:
+- 使用 `tests/` 目录而非 `src/tests/`
+- 测试文件与源文件对应
+- 使用统一的测试命名规范
 
-```
-tests/
-├── __init__.py
-├── conftest.py                  # pytest fixtures
-├── test_models.py               # 测试数据模型
-├── test_client.py               # 测试 API 客户端
-├── test_comparator.py            # 测试答案对比
-├── test_processor.py             # 测试批处理器
-└── test_integration.py          # 测试集成
-```
+**测试类型覆盖**:
+- **单元测试**: 测试单个组件
+- **集成测试**: 测试组件间交互
+- **API测试**: 测试外部服务调用
+- **端到端测试**: 测试完整业务流程
 
 ### 2. TDD 开发流程
 
-**红 → 绿 → 重构**
+**红 → 绿 → 重构** 循环:
 
-```python
-# 1. 红色阶段 - 写失败的测试
-def test_exact_match():
-    """测试精确匹配功能"""
-    from obd.comparator import AnswerComparator
+1. **红色阶段**: 编写失败的测试，明确需求
+2. **绿色阶段**: 编写最少代码让测试通过
+3. **重构阶段**: 优化代码结构，保持测试通过
 
-    comparator = AnswerComparator()
+### 3. 测试质量要求
 
-    # 这个测试会失败，因为我们还没有实现
-    assert comparator.exact_match("579", "579") == True
-    assert comparator.exact_match("是", "是") == True
-    assert comparator.exact_match("Hello", "hello") == True  # 应该忽略大小写
-
-# 2. 绿色阶段 - 写最少代码让测试通过
-class AnswerComparator:
-    @staticmethod
-    def exact_match(answer1: str, answer2: str) -> bool:
-        """精确匹配（忽略大小写和空格）"""
-        return str(answer1).strip().lower() == str(answer2).strip().lower()
-
-# 3. 重构阶段 - 优化代码
-# 可以添加更多测试用例，优化性能等
-```
-
-### 3. 测试规范
-
-```python
-# ✅ 使用 pytest fixtures
-import pytest
-from obd.models import WorkflowConfig
-
-@pytest.fixture
-def test_config():
-    """测试配置 fixture"""
-    return WorkflowConfig(
-        api_key="test-api-key",
-        base_url="http://localhost/v1"
-    )
-
-# ✅ 使用 mock
-from unittest.mock import Mock, patch
-
-def test_api_call_with_mock(test_config):
-    """测试 API 调用（使用 mock）"""
-    with patch('requests.Session.post') as mock_post:
-        # 设置 mock 返回值
-        mock_response = Mock()
-        mock_response.json.return_value = {"answer": "579"}
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
-
-        # 调用测试代码
-        client = DifyWorkflowClient(test_config)
-        result = client.execute_workflow({"query": "1+1=?"})
-
-        # 验证结果
-        assert result["answer"] == "579"
-```
-
-### 4. 测试覆盖率要求
-
-- **单元测试**: ≥ 80%
-- **集成测试**: 覆盖主要业务流程
-- **API 测试**: 真实 API 调用测试
-
-```bash
-# 运行测试并生成覆盖率报告
-uv run pytest --cov=src --cov-report=html --cov-report=term-missing
-
-# 持续测试
-uv run pytest --watch
-```
+- **测试覆盖率**: ≥ 80%
+- **测试独立性**: 测试间不相互依赖
+- **测试可读性**: 测试代码要清晰易懂
+- **测试维护性**: 易于修改和扩展
 
 ---
 
-## 📝 代码风格规范
+## 📝 代码质量规范
 
-### 1. 格式化工具配置
+### 1. 编码风格
 
-**pyproject.toml**:
+- **格式化工具**: 使用 Black 自动格式化
+- **代码检查**: 使用 Ruff 进行静态分析
+- **类型检查**: 使用 MyPy 进行类型检查
+- **命名规范**: 遵循 PEP 8 标准
+
+### 2. 设计原则应用
+
+- **SOLID 原则**: 单一职责、开闭原则等
+- **DRY 原则**: 避免代码重复
+- **KISS 原则**: 保持简单直接
+- **YAGNI 原则**: 不做过度设计
+
+### 3. 文档规范
+
+- **模块文档**: 说明模块的职责和功能
+- **类文档**: 说明类的用途和接口
+- **方法文档**: 说明参数和返回值
+- **更新日志**: 记录版本变更历史
+
+---
+
+## 🔧 开发工具配置
+
+### 1. 代码质量工具
+
 ```toml
+# pyproject.toml 配置
 [tool.black]
 line-length = 88
 target-version = ['py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-select = [
-    "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
-    "F",  # pyflakes
-    "I",  # isort
-    "B",  # flake8-bugbear
-    "C4", # flake8-comprehensions
-    "UP", # pyupgrade
-]
-ignore = [
-    "E501",  # line too long, handled by black
-    "B008",  # do not perform function calls in argument defaults
-    "W191",  # indentation contains tabs
-    "B904",  # Allow raising exceptions without from e, for HTTP
-]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
 
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true
-warn_unused_configs = true
 disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
 ```
 
-### 2. 编码规范
+### 2. 测试配置
 
-```python
-# ✅ 良好的代码示例
-from typing import List, Dict, Any, Optional
-
-class AnswerComparator:
-    """答案对比器 - 支持多种匹配算法"""
-
-    @staticmethod
-    def exact_match(answer1: str, answer2: str) -> bool:
-        """精确匹配（忽略大小写和空格）
-
-        Args:
-            answer1: 第一个答案
-            answer2: 第二个答案
-
-        Returns:
-            bool: 是否匹配
-        """
-        return (str(answer1).strip().lower() ==
-                str(answer2).strip().lower())
-
-    def compare(
-        self,
-        expected: str,
-        actual: str,
-        method: str = "auto"
-    ) -> tuple[bool, str]:
-        """对比答案
-
-        Args:
-            expected: 期望答案
-            actual: 实际答案
-            method: 匹配方法
-
-        Returns:
-            tuple[是否匹配, 匹配类型]
-        """
-        # ... 实现逻辑
+```toml
+# pytest.ini 配置
+[tool:pytest]
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+addopts = -v --tb=short
 ```
 
-### 3. 命名规范
+### 3. 依赖管理
 
-```python
-# ✅ 类名使用 PascalCase
-class WorkflowBatchProcessor:
-    pass
-
-# ✅ 函数和变量使用 snake_case
-def process_excel_file():
-    excel_data = pd.read_excel("file.xlsx")
-
-# ✅ 常量使用 UPPER_CASE
-MAX_RETRIES = 3
-DEFAULT_TIMEOUT = 60
-
-# ✅ 私有成员使用单下划线前缀
-class DataLoader:
-    def _load_private_data(self):
-        pass
-```
-
----
-
-## 🔗 模块交互规范
-
-### 1. 依赖注入
-
-```python
-# ✅ 使用依赖注入
-class WorkflowBatchProcessor:
-    def __init__(
-        self,
-        config: WorkflowConfig,
-        client: Optional[APIClient] = None,
-        comparator: Optional[AnswerComparator] = None
-    ):
-        self.config = config
-        self.client = client or DifyWorkflowClient(config)
-        self.comparator = comparator or AnswerComparator()
-```
-
-### 2. 接口隔离
-
-```python
-# ✅ 定义清晰的接口
-from abc import ABC, abstractmethod
-
-class DataProcessor(ABC):
-    @abstractmethod
-    def process_data(self, data: Any) -> Any:
-        pass
-
-class APIClient(ABC):
-    @abstractmethod
-    def call_api(self, request: Any) -> Any:
-        pass
-```
-
-### 3. 错误处理
-
-```python
-# ✅ 自定义异常
-class OBDError(Exception):
-    """OBD 基础异常"""
-    pass
-
-class APIError(OBDError):
-    """API 调用异常"""
-    pass
-
-class ConfigError(OBDError):
-    """配置错误"""
-    pass
-
-# ✅ 适当的异常处理
-def process_excel(excel_path: str) -> List[QuestionAnswer]:
-    try:
-        # 尝试处理
-        pass
-    except FileNotFoundError as e:
-        raise ConfigError(f"Excel文件不存在: {e}")
-    except ValueError as e:
-        raise OBDError(f"数据处理错误: {e}")
-    except Exception as e:
-        raise OBDError(f"未知错误: {e}")
-```
-
----
-
-## 📊 文档规范
-
-### 1. 代码文档
-
-```python
-# ✅ 模块文档
-"""答案对比模块
-
-提供多种答案匹配算法，用于判断Dify API返回的答案与期望答案是否一致。
-
-Classes:
-    AnswerComparator: 答案对比器，提供多种匹配算法
-
-Functions:
-    exact_match: 精确匹配
-    fuzzy_match: 模糊匹配
-    keyword_match: 关键词匹配
-"""
-
-# ✅ 类文档
-class AnswerComparator:
-    """答案对比器
-
-    提供精确、模糊、关键词等多种答案匹配算法。
-
-    Attributes:
-        None
-
-    Methods:
-        exact_match: 精确匹配
-        fuzzy_match: 模糊匹配
-        keyword_match: 关键词匹配
-        compare: 综合对比
-    """
-```
-
-### 2. API 文档
-
-使用 `spec/` 目录存放所有文档：
-- `api.md` - API 接口文档
-- `models.md` - 数据模型文档
-- `architecture.md` - 架构设计文档
-- `quickstart.md` - 快速开始指南
-
-### 3. 更新日志
-
-**spec/README.md** 中的版本历史追踪：
-
-| 版本 | 日期 | 修改内容 | 作者 |
-|------|------|----------|------|
-| v0.1.0 | 2025-12-29 | 初始版本 | Claude |
-| v0.1.1 | 2025-12-29 | 修正API调用端点 | Claude |
+- 使用 `uv` 进行包管理
+- 开发和生产依赖分离
+- 定期更新依赖版本
+- 安全漏洞扫描
 
 ---
 
 ## 🚀 开发工作流
 
-### 1. 分支策略
+### 1. 版本控制策略
 
-```
-main (主分支，保持稳定)
-├── develop (开发分支)
-├── feature/* (功能分支)
-├── hotfix/* (热修复分支)
-└── release/* (发布分支)
-```
+**分支管理**:
+- `main`: 主分支，保持稳定
+- `develop`: 开发分支，集成最新功能
+- `feature/*`: 功能分支
+- `hotfix/*`: 紧急修复分支
+- `release/*`: 发布准备分支
 
-### 2. 提交信息规范
+**提交规范**:
+- 使用语义化提交信息
+- 包含详细的变更描述
+- 关联相关的问题编号
+- 遵循 Conventional Commits
 
-```bash
-# ✅ 良好的提交信息
-git commit -m "feat: 添加模糊匹配算法"
+### 2. 代码审查流程
 
-# ✅ 详细提交信息
-git commit -m "feat(comparator): 实现模糊匹配算法
+**审查要点**:
+- 代码质量和风格规范
+- 测试覆盖率和质量
+- 架构设计和模块职责
+- 错误处理和边界情况
+- 性能和安全性考虑
 
-- 添加 fuzzy_match 方法
-- 使用 difflib.SequenceMatcher 计算相似度
-- 默认阈值设为 0.8
-- 添加相应的单元测试
+**自动化检查**:
+- CI/CD 流水线集成
+- 代码格式化检查
+- 单元测试运行
+- 类型检查验证
 
-Addresses #123
-Closes #45"
-```
+### 3. 发布管理
 
-### 3. Pull Request 规范
-
-```markdown
-## 变更描述
-- 添加了新的答案对比算法
-- 优化了 API 调用性能
-- 修复了 #123 号问题
-
-## 测试结果
-- 所有单元测试通过
-- 测试覆盖率: 92%
-- 集成测试通过
-
-## 变更影响
-- 破坏性变更: 无
-- 新功能: 是
-- 文档更新: 是
-
-## 检查清单
-- [x] 代码符合项目规范
-- [x] 添加了测试用例
-- [x] 更新了相关文档
-- [x] 提交信息规范
-```
+**版本规范**: 语义化版本 (v1.0.0)
+**发布流程**:
+1. 功能开发完成
+2. 测试验证通过
+3. 文档更新完成
+4. 版本标签创建
+5. 发布说明生成
 
 ---
 
-## 🎯 质量保证
+## 📊 性能和监控
 
-### 1. 自动化检查
+### 1. 性能优化原则
 
-```bash
-# 代码格式化
-uv run black src/ tests/
-uv run ruff check src/ tests/ --fix
+- **测量优先**: 使用性能分析工具确定瓶颈
+- **渐进优化**: 小步改进，持续测试
+- **内存管理**: 及时释放资源，避免内存泄漏
+- **并发控制**: 合理使用多线程和异步
 
-# 类型检查
-uv run mypy src/
+### 2. 监控指标
 
-# 安全检查
-uv run bandit -r src/
+- **处理速度**: 行/分钟、请求/秒
+- **资源使用**: CPU、内存、磁盘 I/O
+- **错误率**: 失败请求百分比
+- **响应时间**: 平均和最大响应时间
 
-# 依赖检查
-uv run safety check
-```
+### 3. 日志规范
 
-### 2. CI/CD 流水线
+- **结构化日志**: 使用 JSON 格式
+- **日志级别**: DEBUG、INFO、WARNING、ERROR
+- **敏感信息**: 不记录密码和密钥
+- **日志轮转**: 定期清理和归档
 
-```yaml
-# .github/workflows/ci.yml
-name: CI/CD
+---
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+## 🔒 安全考虑
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
+### 1. 配置安全
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.11'
+- 敏感配置使用环境变量
+- 配置文件加入 .gitignore
+- 提供配置模板示例
+- 定期轮换 API 密钥
 
-    - name: Install dependencies
-      run: |
-        uv pip install -r requirements.txt
+### 2. 数据安全
 
-    - name: Run tests
-      run: |
-        uv run pytest --cov=src
+- 输入验证和清理
+- 输出编码和转义
+- 加密敏感数据
+- 安全的数据传输
 
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-```
+### 3. 代码安全
+
+- 避免安全漏洞 (XSS、SQL注入等)
+- 使用安全的第三方库
+- 定期安全审计
+- 安全代码审查
+
+---
+
+## 📈 项目演进
+
+### 1. 技术债务管理
+
+- 识别和记录技术债务
+- 制定偿还计划
+- 权衡短期收益和长期健康
+- 定期重构优化
+
+### 2. 文档维护
+
+- 文档与代码同步更新
+- 保持文档的准确性和时效性
+- 收集用户反馈改进文档
+- 建立文档审查流程
+
+### 3. 社区协作
+
+- 开放的问题和讨论渠道
+- 贡献指南和代码规范
+- 版本发布说明
+- 用户反馈收集机制
 
 ---
 
@@ -756,23 +362,24 @@ jobs:
 
 ### 1. 问题排查
 
-- 查看 [问题排查指南](spec/troubleshooting.md)
-- 查看测试报告
-- 检查类型错误
+- 提供详细的错误信息和日志
+- 使用调试工具和性能分析
+- 参考文档和常见问题
+- 社区讨论和经验分享
 
-### 2. 代码审查
+### 2. 持续学习
 
-- 遵循 TDD 原则
-- 确保类型安全
-- 检查测试覆盖率
-- 验证文档完整性
+- 关注技术发展趋势
+- 学习最佳实践和设计模式
+- 参与开源社区
+- 分享经验和知识
 
-### 3. 持续改进
+### 3. 工具和资源
 
-- 定期更新依赖
-- 优化性能
-- 改进代码结构
-- 完善文档
+- 开发环境搭建指南
+- 调试和测试工具使用
+- 代码生成和自动化工具
+- 设计和架构参考资源
 
 ---
 
@@ -782,7 +389,8 @@ jobs:
 |------|------|----------|
 | v0.1.0 | 2025-12-29 | 初始版本，定义开发规范 |
 | v0.1.1 | 2025-12-29 | 完善TDD规范和类型系统要求 |
+| v0.2.0 | 2025-12-29 | 重构为概述性规范，增强可维护性 |
 
 ---
 
-**重要**: 本文档会随着项目发展持续更新，请定期查看最新版本。
+**重要**: 本文档会随着项目发展持续更新，请定期查看最新版本。规范的重点是提供原则性指导，而非具体的实现细节，以保持代码的灵活性和可维护性。
