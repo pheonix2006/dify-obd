@@ -1,3 +1,12 @@
 requests>=2.31.0
 pandas>=2.0.0
 openpyxl>=3.1.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# Development dependencies
+black>=23.0.0
+ruff>=0.1.0
