@@ -2,10 +2,20 @@
 # 复制此文件为 config.ini 并填入你的实际配置
 
 [Dify]
-# Dify API密钥（从Dify控制台获取）
+# Dify API密钥（默认密钥，兼容旧模式）
 # 格式: app-xxxxxxxxxxxxxxxx
 # 请不要在此文件中填写真实密钥，复制后删除注释
 api_key = app-your-api-key-here
+
+[WORKFLOW_MAPPING]
+# 工作流映射表（新模式）
+# 格式: 标准化知识库名称 = API Key
+# 知识库名称会被自动标准化（去除空格，统一小写）
+# 示例:
+# workflow1 = app-api-key-for-workflow-1
+# workflow 2 = app-api-key-for-workflow-2
+# knowledge_base_a = app-api-key-for-knowledge-base-a
+# diesel kb = app-api-key-for-diesel-kb
 
 # Dify API基础URL
 # 云端Dify: https://api.dify.ai/v1

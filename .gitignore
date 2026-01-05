@@ -175,3 +175,6 @@ build/
 temp/
 tmp/
 *.tmp
+
+# 测试文件
+*_测试*.xlsx

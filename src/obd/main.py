@@ -3,14 +3,15 @@
 import configparser
 import sys
 from pathlib import Path
+from typing import Dict
 
-from obd.models import WorkflowConfig
+from obd.models import WorkflowConfig, RoutingConfig
 from obd.processor.batch_processor import WorkflowBatchProcessor
 
 
 def load_config(config_path: str = "config.ini") -> dict:
     """
-    加载配置文件
+    加载配置文件（支持路由映射）
 
     Args:
         config_path: 配置文件路径
@@ -20,6 +21,14 @@ def load_config(config_path: str = "config.ini") -> dict:
     """
     config = configparser.ConfigParser()
     config.read(config_path)
+
+    # 解析工作流映射
+    workflow_mapping = {}
+    if config.has_section("WORKFLOW_MAPPING"):
+        for kb_name, api_key in config.items("WORKFLOW_MAPPING"):
+            # 标准化键名
+            standardized_kb = kb_name.strip().lower()
+            workflow_mapping[standardized_kb] = api_key
 
     # workflow_id是可选的
     workflow_id = None
@@ -32,27 +41,28 @@ def load_config(config_path: str = "config.ini") -> dict:
         "response_mode": config.get("Dify", "response_mode"),
         "timeout": config.getint("Dify", "timeout"),
         "excel_path": config.get("Excel", "file_path"),
-        "question_column": config.get("Excel", "question_column"),
-        "answer_column": config.get("Excel", "answer_column"),
-        "input_variable_name": config.get("Workflow", "input_variable_name"),
-        "output_variable_name": config.get("Workflow", "output_variable_name"),
-        "comparison_method": config.get("Workflow", "comparison_method"),
-        "delay": config.getfloat("Workflow", "delay"),
+        "question_column": config.get("Excel", "question_column", fallback="question"),
+        "answer_column": config.get("Excel", "answer_column", fallback="answer"),
+        "input_variable_name": config.get("Workflow", "input_variable_name", fallback="query"),
+        "output_variable_name": config.get("Workflow", "output_variable_name", fallback="answer"),
+        "comparison_method": config.get("Workflow", "comparison_method", fallback="auto"),
+        "delay": config.getfloat("Workflow", "delay", fallback=0.5),
         "output_path": config.get("Output", "file_path"),
         "workflow_id": workflow_id,
+        "workflow_mapping": workflow_mapping,
     }
 
 
 def main():
     """主函数"""
     print("=" * 60)
-    print("Dify工作流批处理器 - 真实API测试")
+    print("Dify工作流批处理器 - 动态路由版本")
     print("=" * 60)
     print()
 
     # 加载配置
     config_data = load_config()
-    print(f"加载配置: {config_data}")
+    print(f"加载配置...")
 
     # 创建工作流配置
     workflow_config = WorkflowConfig(
@@ -60,17 +70,26 @@ def main():
         base_url=config_data["base_url"],
         response_mode=config_data["response_mode"],
         timeout=config_data["timeout"],
+        workflow_mapping=config_data.get("workflow_mapping", {})
+    )
+
+    # 创建路由配置
+    routing_config = RoutingConfig(
+        knowledge_base_column=config_data.get("knowledge_base_column", "KNOWLEDGE_BASE"),
+        answer_state_column=config_data.get("answer_state_column", "ANSWER_STATE"),
+        feedback_answer_column=config_data.get("feedback_answer_column", "FEEDBACK_ANSWER"),
+        problem_value_column=config_data.get("problem_value_column", "PROBLEM_VALUE"),
+        answer_value_column=config_data.get("answer_value_column", "ANSWER_VALUE")
     )
 
     # 创建批处理器
-    processor = WorkflowBatchProcessor(workflow_config)
+    processor = WorkflowBatchProcessor(workflow_config, routing_config)
 
-    print()
-    print(f"处理Excel文件: {config_data['excel_path']}")
-    print(f"问题列: {config_data['question_column']}")
-    print(f"答案列: {config_data['answer_column']}")
+    print(f"Excel文件: {config_data['excel_path']}")
     print(f"对比方法: {config_data['comparison_method']}")
     print(f"请求延迟: {config_data['delay']}秒")
+    if config_data.get('workflow_mapping'):
+        print(f"已加载 {len(config_data['workflow_mapping'])} 个工作流映射")
     print()
     print("-" * 60)
 
@@ -94,6 +113,8 @@ def main():
         print("=" * 60)
         print("统计结果:")
         print(f"  总数量: {statistics['total']}")
+        print(f"  评测数量: {statistics['evaluated']}")
+        print(f"  异常模式数量: {statistics['feedback_mode']}")
         print(f"  正确数量: {statistics['correct']}")
         print(f"  错误数量: {statistics['incorrect']}")
         print(f"  失败数量: {statistics['failed']}")
