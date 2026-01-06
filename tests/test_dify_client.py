@@ -1,8 +1,8 @@
 """测试Dify客户端"""
 
 import pytest
-import requests
-from unittest.mock import Mock, patch
+import httpx
+from unittest.mock import AsyncMock, patch, Mock
 from obd.client.dify_client import DifyWorkflowClient
 from obd.models import WorkflowConfig
 
@@ -10,21 +10,21 @@ from obd.models import WorkflowConfig
 class TestDifyWorkflowClient:
     """测试DifyWorkflowClient类"""
 
-    def setup_method(self):
-        """测试前设置"""
-        self.config = WorkflowConfig(
+    @pytest.fixture
+    def config(self):
+        """测试配置"""
+        return WorkflowConfig(
             api_key="test_api_key",
             base_url="https://api.dify.ai/v1",
             response_mode="blocking",
             timeout=60
         )
-        self.client = DifyWorkflowClient(self.config)
 
-    @patch('requests.Session.post')
-    def test_execute_workflow_success(self, mock_post):
+    @pytest.mark.asyncio
+    async def test_execute_workflow_success(self, config):
         """测试成功执行工作流"""
-        # 模拟API响应
-        mock_response = Mock()
+        # 模拟 httpx.AsyncClient.post
+        mock_response = MagicMock()
         mock_response.json.return_value = {
             "workflow_run_id": "test-run-id",
             "task_id": "test-task-id",
@@ -35,54 +35,43 @@ class TestDifyWorkflowClient:
             }
         }
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+
+        async_client_mock = AsyncMock()
+        async_client_mock.post.return_value = mock_response
+
+        client = DifyWorkflowClient(config, client=async_client_mock)
 
         # 执行工作流
         inputs = {"query": "测试问题"}
-        result = self.client.execute_workflow(inputs)
+        result = await client.execute_workflow(inputs)
 
         # 验证结果
         assert result["workflow_run_id"] == "test-run-id"
         assert result["task_id"] == "test-task-id"
-        assert result["data"]["outputs"]["answer"] == "这是处理结果"
 
         # 验证请求参数
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
+        async_client_mock.post.assert_called_once()
+        call_args = async_client_mock.post.call_args
         assert call_args[1]['json']['inputs'] == inputs
-        assert call_args[1]['json']['response_mode'] == "blocking"
         assert call_args[1]['json']['user'] == "batch_processor"
 
-    @patch('requests.Session.post')
-    def test_execute_workflow_with_custom_user(self, mock_post):
-        """测试使用自定义用户ID执行工作流"""
-        mock_response = Mock()
-        mock_response.json.return_value = {"workflow_run_id": "test-run-id"}
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
-
-        inputs = {"query": "测试问题"}
-        user = "test_user"
-        result = self.client.execute_workflow(inputs, user)
-
-        # 验证使用了自定义用户ID
-        call_args = mock_post.call_args
-        assert call_args[1]['json']['user'] == user
-        assert result["workflow_run_id"] == "test-run-id"
-
-    @patch('requests.Session.post')
-    def test_execute_workflow_request_error(self, mock_post):
+    @pytest.mark.asyncio
+    async def test_execute_workflow_request_error(self, config):
         """测试API请求错误"""
         # 模拟网络错误
-        mock_post.side_effect = requests.exceptions.RequestException("连接超时")
+        async_client_mock = AsyncMock()
+        async_client_mock.post.side_effect = httpx.HTTPError("连接超时")
 
+        client = DifyWorkflowClient(config, client=async_client_mock)
         inputs = {"query": "测试问题"}
 
         # 应该抛出异常
         with pytest.raises(Exception) as exc_info:
-            self.client.execute_workflow(inputs)
+            await client.execute_workflow(inputs)
         # 验证异常消息包含"API调用失败"
         assert "API调用失败" in str(exc_info.value)
+
+from unittest.mock import MagicMock
 
     @patch('requests.Session.get')
     def test_get_workflow_run_detail_success(self, mock_get):

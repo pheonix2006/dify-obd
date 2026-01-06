@@ -1,16 +1,18 @@
 """工作流批处理器"""
 
+import asyncio
 import json
 import logging
 import os
-import time
 from typing import Dict, Any, List, Optional
 
+import httpx
 import pandas as pd
 
 from obd.client.dify_client import DifyWorkflowClient
 from obd.comparator.answer_comparator import AnswerComparator
-from obd.models import QuestionAnswer, WorkflowConfig, RoutingConfig
+from obd.comparator.llm_comparator import LLMComparator
+from obd.models import QuestionAnswer, WorkflowConfig, RoutingConfig, LLMEvalConfig
 from obd.processor.routing import WorkflowRouting
 from obd.processor.evaluation import EvaluationBranch
 
@@ -26,16 +28,28 @@ class WorkflowBatchProcessor:
         self,
         config: WorkflowConfig,
         routing_config: Optional[RoutingConfig] = None,
-        client=None
+        client=None,
+        llm_eval_config: Optional[LLMEvalConfig] = None
     ):
         self.config = config
         self.routing_config = routing_config or RoutingConfig()
+        self.llm_eval_config = llm_eval_config or LLMEvalConfig()
         self.client = client or DifyWorkflowClient(config)
         self.comparator = AnswerComparator()
+        self.llm_comparator = LLMComparator(self.llm_eval_config)
 
         # 初始化路由和评测组件
         self.routing = WorkflowRouting(config)
         self.evaluator = EvaluationBranch(comparison_method="auto")
+        
+        # 共享异步客户端
+        self._async_client = httpx.AsyncClient(timeout=config.timeout)
+
+    async def close(self):
+        """关闭资源"""
+        await self._async_client.aclose()
+        if hasattr(self.client, 'close'):
+            await self.client.close()
 
     def load_excel(self, excel_path: str) -> pd.DataFrame:
         """
@@ -58,11 +72,12 @@ class WorkflowBatchProcessor:
 
         return df
 
-    def process_row_with_routing(
+    async def process_row_with_routing(
         self,
         row: pd.Series,
         idx: int,
-        total_rows: int
+        total_rows: int,
+        semaphore: Optional[asyncio.Semaphore] = None
     ) -> Optional[QuestionAnswer]:
         """
         处理单行数据（支持路由和分支）
@@ -71,12 +86,30 @@ class WorkflowBatchProcessor:
             row: DataFrame行
             idx: 行索引
             total_rows: 总行数
+            semaphore: 并发控制信号量
 
         Returns:
             QuestionAnswer对象（如果跳过则返回None）
         """
+        if semaphore:
+            async with semaphore:
+                return await self._process_row_logic(row, idx, total_rows)
+        else:
+            return await self._process_row_logic(row, idx, total_rows)
+
+    async def _process_row_logic(
+        self,
+        row: pd.Series,
+        idx: int,
+        total_rows: int
+    ) -> Optional[QuestionAnswer]:
+        """单行处理的具体逻辑"""
         # 提取列值
-        question = str(row.get(self.routing_config.problem_value_column, ""))
+        problem_val = row.get(self.routing_config.problem_value_column, "")
+        if pd.isna(problem_val) or (isinstance(problem_val, str) and not problem_val.strip()):
+            return None
+
+        question = str(problem_val)
         knowledge_base = row.get(self.routing_config.knowledge_base_column, "")
         answer_state = row.get(self.routing_config.answer_state_column, None)
         expected_answer = row.get(self.routing_config.answer_value_column, "")
@@ -104,22 +137,24 @@ class WorkflowBatchProcessor:
                 base_url=self.config.base_url,
                 response_mode=self.config.response_mode,
                 timeout=self.config.timeout,
-                user=self.config.user
+                user=self.config.user,
+                input_variable_name=self.config.input_variable_name,
+                output_variable_name=self.config.output_variable_name
             )
 
-            # 创建临时客户端
-            temp_client = DifyWorkflowClient(temp_config)
+            # 使用共享异步客户端
+            temp_client = DifyWorkflowClient(temp_config, client=self._async_client)
 
             # 调用工作流
-            inputs = {"query": question}
-            result = temp_client.execute_workflow(
+            inputs = {self.config.input_variable_name: question}
+            result = await temp_client.execute_workflow(
                 inputs,
                 self.config.user,
                 None
             )
 
             qa.workflow_run_id = result.get("task_id")
-            actual_answer = result.get("answer", json.dumps(result, ensure_ascii=False))
+            actual_answer = result.get(self.config.output_variable_name, json.dumps(result, ensure_ascii=False))
 
         except Exception as e:
             qa.error = str(e)
@@ -134,11 +169,28 @@ class WorkflowBatchProcessor:
                 actual_answer=actual_answer,
                 feedback_answer=str(feedback_answer) if feedback_answer else None
             )
+            
+            # 4. LLM 辅助评测（如果启用且是正常评测模式）
+            if self.llm_eval_config.enabled and qa.is_evaluated:
+                # 只有在常规匹配不成功，或者配置为总是评测时才调用（目前设计为启用即调用，以减少人工核对）
+                is_llm_correct, llm_analysis = await self.llm_comparator.evaluate(
+                    question=qa.question,
+                    expected=str(expected_answer),
+                    actual=actual_answer
+                )
+                qa.llm_analysis = llm_analysis
+                # 如果原匹配不成功但 LLM 判定成功，可以作为参考
+                if not qa.is_correct and is_llm_correct:
+                    qa.match_type = f"{qa.match_type}+llm_fixed"
+                    qa.is_correct = True
         else:
             # API调用失败，默认为正常模式但标记错误
             qa.model_output = actual_answer
             qa.final_display = actual_answer
             qa.is_evaluated = True
+
+        # 实时打印结果
+        self._print_result(qa, idx, total_rows)
 
         return qa
 
@@ -168,7 +220,7 @@ class WorkflowBatchProcessor:
             print(f"{prefix}")
             print(f"  ↔ 异常模式 - 使用反馈答案: {qa.final_display[:50]}...")
 
-    def process_question(
+    async def process_question(
         self,
         question: str,
         input_variable_name: str = "query",
@@ -196,15 +248,15 @@ class WorkflowBatchProcessor:
         try:
             # 调用工作流
             inputs = {input_variable_name: question}
-            result = self.client.execute_workflow(inputs, user, workflow_id)
+            result = await self.client.execute_workflow(inputs, user, workflow_id)
 
             # 提取工作流运行ID
             qa.workflow_run_id = result.get("task_id")
 
             # 根据调试结果，聊天应用返回的answer字段包含回复内容
-            # 如果没有answer字段，返回原始响应
-            if "answer" in result:
-                qa.workflow_result = str(result["answer"])
+            # 如果没有该字段，返回原始响应
+            if output_variable_name in result:
+                qa.workflow_result = str(result[output_variable_name])
             else:
                 qa.workflow_result = json.dumps(result, ensure_ascii=False)
 
@@ -213,7 +265,7 @@ class WorkflowBatchProcessor:
 
         return qa
 
-    def process_excel(
+    async def process_excel(
         self,
         excel_path: str,
         question_column: str = "question",
@@ -238,7 +290,7 @@ class WorkflowBatchProcessor:
             comparison_method: 答案对比方法
             start_row: 起始行（0-based）
             end_row: 结束行（不包含）
-            delay: 每次请求之间的延迟（秒）
+            delay: 每批次请求之间的最小延迟（秒）
             workflow_id: 工作流ID（可选）
 
         Returns:
@@ -250,11 +302,11 @@ class WorkflowBatchProcessor:
         is_new_mode = self._check_new_columns(df)
 
         if is_new_mode:
-            print("使用新模式：路由分发 + 评测分支")
-            return self._process_excel_new_mode(df, start_row, end_row, delay)
+            print(f"使用新模式：路由分发 + 评测分支 (并发数: {self.config.max_workers})")
+            return await self._process_excel_new_mode(df, start_row, end_row, delay)
         else:
-            print("使用旧模式：单API Key + 全量评测")
-            return self._process_excel_legacy_mode(
+            print(f"使用旧模式：单API Key + 全量评测 (并发数: {self.config.max_workers})")
+            return await self._process_excel_legacy_mode(
                 df,
                 question_column,
                 answer_column,
@@ -267,7 +319,7 @@ class WorkflowBatchProcessor:
                 workflow_id
             )
 
-    def _process_excel_new_mode(
+    async def _process_excel_new_mode(
         self,
         df: pd.DataFrame,
         start_row: int,
@@ -282,28 +334,21 @@ class WorkflowBatchProcessor:
         print(f"共 {total_rows} 行，处理第 {start_row} 行到第 {end_row-1} 行")
         print("-" * 60)
 
-        results = []
-
+        # 创建信号量
+        semaphore = asyncio.Semaphore(self.config.max_workers)
+        
+        tasks = []
         for idx in range(start_row, end_row):
             row = df.iloc[idx]
+            tasks.append(self.process_row_with_routing(row, idx, total_rows, semaphore))
 
-            # 处理单行
-            qa = self.process_row_with_routing(row, idx, total_rows)
+        # 并发执行
+        all_results = await asyncio.gather(*tasks)
+        
+        # 过滤 None（跳过的行）并保持顺序
+        return [r for r in all_results if r is not None]
 
-            if qa is None:
-                continue  # 跳过无效行
-
-            # 打印结果
-            self._print_result(qa, idx, total_rows)
-            results.append(qa)
-
-            # 延迟
-            if delay > 0 and idx < end_row - 1:
-                time.sleep(delay)
-
-        return results
-
-    def _process_excel_legacy_mode(
+    async def _process_excel_legacy_mode(
         self,
         df: pd.DataFrame,
         question_column: str,
@@ -332,24 +377,25 @@ class WorkflowBatchProcessor:
         print(f"共 {total_rows} 行，处理第 {start_row} 行到第 {end_row-1} 行")
         print("-" * 60)
 
-        results = []
+        semaphore = asyncio.Semaphore(self.config.max_workers)
 
-        for idx in range(start_row, end_row):
+        async def process_task(idx):
             row = df.iloc[idx]
             question = str(row[question_column])
             expected_answer = str(row[answer_column])
 
             print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
 
-            # 处理问题
-            qa = self.process_question(
-                question=question,
-                input_variable_name=input_variable_name,
-                output_variable_name=output_variable_name,
-                comparison_method=comparison_method,
-                workflow_id=workflow_id
-            )
-            qa.expected_answer = expected_answer
+            async with semaphore:
+                # 处理问题
+                qa = await self.process_question(
+                    question=question,
+                    input_variable_name=input_variable_name,
+                    output_variable_name=output_variable_name,
+                    comparison_method=comparison_method,
+                    workflow_id=workflow_id
+                )
+                qa.expected_answer = expected_answer
 
             # 对比答案
             if qa.workflow_result and not qa.error:
@@ -369,12 +415,11 @@ class WorkflowBatchProcessor:
                     print(f"    实际: {qa.workflow_result[:100]}")
             else:
                 print(f"  ✗ 失败: {qa.error}")
+            
+            return qa
 
-            results.append(qa)
-
-            # 延迟以避免请求过快
-            if delay > 0 and idx < end_row - 1:
-                time.sleep(delay)
+        tasks = [process_task(i) for i in range(start_row, end_row)]
+        results = await asyncio.gather(*tasks)
 
         return results
 
@@ -451,7 +496,8 @@ class WorkflowBatchProcessor:
                 "错误信息": qa.error or "",
                 "工作流运行ID": qa.workflow_run_id or "",
                 "USED_API_KEY": qa.used_api_key or "",
-                "是否评测": "是" if qa.is_evaluated else "否"
+                "是否评测": "是" if qa.is_evaluated else "否",
+                "LLM 评测分析": qa.llm_analysis or "N/A"
             })
 
         df = pd.DataFrame(data)

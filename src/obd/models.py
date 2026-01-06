@@ -11,7 +11,10 @@ class WorkflowConfig:
     base_url: str = "https://api.dify.ai/v1"  # Dify API基础URL
     response_mode: str = "blocking"  # blocking 或 streaming
     timeout: int = 60  # 请求超时时间（秒）
+    max_workers: int = 5  # 最大并发数
     user: str = "batch_processor"  # 用户标识
+    input_variable_name: str = "query"  # 工作流输入变量名
+    output_variable_name: str = "answer"  # 工作流输出变量名
     workflow_mapping: Dict[str, str] = field(default_factory=dict)  # 知识库名称到API Key的映射表
 
 
@@ -26,13 +29,24 @@ class RoutingConfig:
 
 
 @dataclass
+class LLMEvalConfig:
+    """LLM评测配置"""
+    enabled: bool = False
+    api_key: Optional[str] = None
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o"
+    prompt_template: Optional[str] = None
+    timeout: int = 30
+
+
+@dataclass
 class QuestionAnswer:
     """问题-答案对"""
     question: str
     expected_answer: str
     workflow_result: Optional[str] = None
     is_correct: bool = False
-    match_type: Optional[str] = None  # exact, fuzzy, keyword, semantic
+    match_type: Optional[str] = None  # exact, fuzzy, keyword, semantic, llm
     workflow_run_id: Optional[str] = None
     error: Optional[str] = None
 
@@ -44,3 +58,4 @@ class QuestionAnswer:
     answer_state: Optional[Any] = None  # 原始ANSWER_STATE值
     feedback_answer: Optional[str] = None  # 反馈答案（用于异常模式）
     used_api_key: Optional[str] = None  # 使用的API Key（后四位）
+    llm_analysis: Optional[str] = None  # LLM 评测分析结果

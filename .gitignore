@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -144,26 +144,26 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-# 配置文件 - 包含敏感信息
+# é…ç½®æ–‡ä»¶ - åŒ…å«æ•æ„Ÿä¿¡æ¯
 config.ini
 !config.ini.example
 
-# 数据文件
+# æ•°æ®æ–‡ä»¶
 questions.xlsx
 results.xlsx
 data/*.xlsx
 data/*.csv
 
-# 日志文件
+# æ—¥å¿—æ–‡ä»¶
 *.log
 logs/
 
-# 测试覆盖率
+# æµ‹è¯•è¦†ç›–çŽ‡
 htmlcov/
 coverage.xml
 .coverage
 
-# 构建产物
+# æž„å»ºäº§ç‰©
 .venv/
 uv.lock
 __pycache__/
@@ -171,10 +171,15 @@ dist/
 build/
 *.egg-info/
 
-# 临时文件
+# ä¸´æ—¶æ–‡ä»¶
 temp/
 tmp/
 *.tmp
 
-# 测试文件
-*_测试*.xlsx
+# æµ‹è¯•æ–‡ä»¶
+*_æµ‹è¯•*.xlsx
+
+# Data files
+*.xlsx
+*.xls
+*.csv
