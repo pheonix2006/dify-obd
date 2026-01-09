@@ -1,11 +1,16 @@
 import httpx
 import asyncio
 import json
+import os
+
+# 设置 NO_PROXY 确保可以访问本地服务
+os.environ["NO_PROXY"] = "localhost,127.0.0.1" + ("," + os.environ.get("NO_PROXY", "")) if os.environ.get("NO_PROXY") else "localhost,127.0.0.1"
 
 # 配置参数 (参考 config.ini)
-API_KEY = "YOUR_DIFY_API_KEY"
-BASE_URL = "http://localhost/v1"
+API_KEY = "app-3nLTdXKOIfONflheHujqlkYa"
+BASE_URL = "http://localhost:8088/v1"
 USER_ID = "test_user_001"
+
 
 async def test_dify_api():
     url = f"{BASE_URL}/chat-messages"
@@ -22,7 +27,7 @@ async def test_dify_api():
         "response_mode": "blocking",
         "user": USER_ID,
     }
-    
+    print(f"系统 NO_PROXY: {os.environ.get('no_proxy', os.environ.get('NO_PROXY', '未设置'))}")
     print(f"正在请求 {url}...")
     
     async with httpx.AsyncClient() as client:

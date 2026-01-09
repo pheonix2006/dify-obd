@@ -5,10 +5,10 @@ import configparser
 import sys
 from pathlib import Path
 from typing import Dict
-
+import os
 from obd.models import WorkflowConfig, RoutingConfig, LLMEvalConfig
 from obd.processor.batch_processor import WorkflowBatchProcessor
-
+os.environ["NO_PROXY"] = "localhost,127.0.0.1" + ("," + os.environ.get("NO_PROXY", "")) if os.environ.get("NO_PROXY") else "localhost,127.0.0.1"
 
 def load_config(config_path: str = "config.ini") -> dict:
     """
