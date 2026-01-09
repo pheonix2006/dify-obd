@@ -1,6 +1,6 @@
 """路由分发组件"""
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 from obd.models import WorkflowConfig
 
@@ -12,11 +12,13 @@ class WorkflowRouting:
         self.config = config
         self.workflow_mapping = config.workflow_mapping
 
-    def standardize_kb_name(self, kb_name: str) -> str:
+    def standardize_kb_name(self, kb_name: Any) -> str:
         """
         标准化知识库名称
+        - 处理 NaN, None, 空字符串
         - 去除首尾空格
         - 转换为小写
+        - 将空值标识为 'null' 以匹配配置
 
         Args:
             kb_name: 原始知识库名称
@@ -24,11 +26,24 @@ class WorkflowRouting:
         Returns:
             标准化后的名称
         """
-        if not kb_name or not isinstance(kb_name, str):
-            return ""
-        return kb_name.strip().lower()
+        # 处理 None
+        if kb_name is None:
+            return "null"
+        
+        # 处理 NaN (float)
+        if isinstance(kb_name, float) and kb_name != kb_name:
+            return "null"
+            
+        # 转换为字符串并处理
+        kb_str = str(kb_name).strip().lower()
+        
+        # 处理空字符串或字符串形式的 'nan'
+        if not kb_str or kb_str == 'nan' or kb_str == 'none':
+            return "null"
+            
+        return kb_str
 
-    def get_api_key(self, knowledge_base: str) -> Optional[str]:
+    def get_api_key(self, knowledge_base: Any) -> Optional[str]:
         """
         根据知识库名称获取对应的API Key
 
@@ -41,7 +56,7 @@ class WorkflowRouting:
         standardized_kb = self.standardize_kb_name(knowledge_base)
         return self.workflow_mapping.get(standardized_kb)
 
-    def validate_mapping(self, kb_name: str) -> Tuple[bool, Optional[str]]:
+    def validate_mapping(self, kb_name: Any) -> Tuple[bool, Optional[str]]:
         """
         验证知识库映射是否存在
 
