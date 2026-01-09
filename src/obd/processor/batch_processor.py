@@ -162,8 +162,8 @@ class WorkflowBatchProcessor:
 
         # 3. 评测分支（完全依赖 LLM 评测）
         if actual_answer and not qa.error:
-            qa.model_output = actual_answer
-            qa.final_display = actual_answer
+            qa.model_output = str(actual_answer)
+            qa.final_display = str(actual_answer)
 
             # 判断是否评测模式
             is_eval_mode = True
@@ -178,8 +178,8 @@ class WorkflowBatchProcessor:
             if not is_eval_mode:
                 # 异常模式：使用反馈答案
                 qa.is_evaluated = False
-                if feedback_answer:
-                    qa.final_display = feedback_answer
+                if pd.notna(feedback_answer) and feedback_answer != "":
+                    qa.final_display = str(feedback_answer)
             else:
                 # 正常模式：使用 LLM 评测
                 qa.is_evaluated = True
@@ -201,8 +201,8 @@ class WorkflowBatchProcessor:
                     qa.match_type = "llm_disabled"
         else:
             # API调用失败
-            qa.model_output = actual_answer
-            qa.final_display = actual_answer
+            qa.model_output = str(actual_answer) if actual_answer is not None else None
+            qa.final_display = str(actual_answer) if actual_answer is not None else None
             qa.is_evaluated = True
 
         # 实时打印结果
@@ -241,8 +241,10 @@ class WorkflowBatchProcessor:
                 print(f"{prefix}")
                 print(f"  ↔ 未启用 LLM 评测")
         else:
+            # 确保 final_display 是字符串且不为 None
+            display_text = str(qa.final_display) if qa.final_display is not None else ""
             print(f"{prefix}")
-            print(f"  ↔ 异常模式 - 使用反馈答案: {qa.final_display[:50]}...")
+            print(f"  ↔ 异常模式 - 使用反馈答案: {display_text[:50]}...")
 
     async def process_question(
         self,

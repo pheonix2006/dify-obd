@@ -60,8 +60,8 @@ class EvaluationBranch:
         Returns:
             更新后的QuestionAnswer对象
         """
-        qa.model_output = actual_answer
-        qa.final_display = actual_answer
+        qa.model_output = str(actual_answer) if actual_answer is not None else None
+        qa.final_display = str(actual_answer) if actual_answer is not None else None
         qa.is_evaluated = True
 
         if actual_answer and not qa.error:
@@ -95,8 +95,8 @@ class EvaluationBranch:
         Returns:
             更新后的QuestionAnswer对象
         """
-        qa.model_output = actual_answer
-        qa.final_display = feedback_answer
+        qa.model_output = str(actual_answer) if actual_answer is not None else None
+        qa.final_display = str(feedback_answer) if feedback_answer is not None else None
         qa.is_evaluated = False  # 不计入统计
         qa.is_correct = None  # N/A
         qa.match_type = None
