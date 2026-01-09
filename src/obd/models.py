@@ -2,6 +2,31 @@
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
+from enum import Enum
+
+
+class AnswerCategory(Enum):
+    """4级答案分类"""
+    FULLY_CORRECT = "fully_correct"        # 完全正确
+    PARTIAL_MISSING = "partial_missing"      # 部分缺失
+    LARGE_MISSING = "large_missing"          # 大量缺失
+    COMPLETELY_WRONG = "completely_wrong"    # 完全错误
+
+    @property
+    def label(self) -> str:
+        """中文标签"""
+        labels = {
+            "fully_correct": "完全正确",
+            "partial_missing": "部分缺失",
+            "large_missing": "大量缺失",
+            "completely_wrong": "完全错误"
+        }
+        return labels[self.value]
+
+    @property
+    def is_correct_2level(self) -> bool:
+        """2级分类：是否正确"""
+        return self == AnswerCategory.FULLY_CORRECT
 
 
 @dataclass
@@ -37,6 +62,21 @@ class LLMEvalConfig:
     model: str = "gpt-4o"
     prompt_template: Optional[str] = None
     timeout: int = 30
+    judgment_mode: str = "detailed"  # detailed/autonomous
+    temperature: float = 0.0  # 控制输出的确定性
+
+    def __post_init__(self):
+        """验证配置项"""
+        if self.judgment_mode not in ("detailed", "autonomous"):
+            raise ValueError(
+                f"Invalid judgment_mode: {self.judgment_mode}. "
+                f"Must be 'detailed' or 'autonomous'"
+            )
+        if not 0.0 <= self.temperature <= 1.0:
+            raise ValueError(
+                f"Invalid temperature: {self.temperature}. "
+                f"Must be between 0.0 and 1.0"
+            )
 
 
 @dataclass
@@ -59,3 +99,12 @@ class QuestionAnswer:
     feedback_answer: Optional[str] = None  # 反馈答案（用于异常模式）
     used_api_key: Optional[str] = None  # 使用的API Key（后四位）
     llm_analysis: Optional[str] = None  # LLM 评测分析结果
+    llm_category: Optional[str] = None  # LLM 4级分类结果
+    missing_info: Optional[str] = None  # 缺失的具体内容
+
+    @property
+    def answer_category(self) -> Optional[AnswerCategory]:
+        """获取4级分类枚举"""
+        if self.llm_category:
+            return AnswerCategory(self.llm_category)
+        return None

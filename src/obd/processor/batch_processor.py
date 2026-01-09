@@ -160,31 +160,47 @@ class WorkflowBatchProcessor:
             qa.error = str(e)
             actual_answer = None
 
-        # 3. 评测分支
+        # 3. 评测分支（完全依赖 LLM 评测）
         if actual_answer and not qa.error:
-            qa = self.evaluator.evaluate(
-                qa,
-                answer_state=answer_state,
-                expected_answer=str(expected_answer),
-                actual_answer=actual_answer,
-                feedback_answer=str(feedback_answer) if feedback_answer else None
-            )
-            
-            # 4. LLM 辅助评测（如果启用且是正常评测模式）
-            if self.llm_eval_config.enabled and qa.is_evaluated:
-                # 只有在常规匹配不成功，或者配置为总是评测时才调用（目前设计为启用即调用，以减少人工核对）
-                is_llm_correct, llm_analysis = await self.llm_comparator.evaluate(
-                    question=qa.question,
-                    expected=str(expected_answer),
-                    actual=actual_answer
-                )
-                qa.llm_analysis = llm_analysis
-                # 如果原匹配不成功但 LLM 判定成功，可以作为参考
-                if not qa.is_correct and is_llm_correct:
-                    qa.match_type = f"{qa.match_type}+llm_fixed"
-                    qa.is_correct = True
+            qa.model_output = actual_answer
+            qa.final_display = actual_answer
+
+            # 判断是否评测模式
+            is_eval_mode = True
+            if answer_state is not None:
+                if isinstance(answer_state, str):
+                    is_eval_mode = answer_state.strip().lower() not in ("false", "0", "")
+                elif isinstance(answer_state, bool):
+                    is_eval_mode = answer_state
+                elif isinstance(answer_state, (int, float)):
+                    is_eval_mode = bool(answer_state)
+
+            if not is_eval_mode:
+                # 异常模式：使用反馈答案
+                qa.is_evaluated = False
+                if feedback_answer:
+                    qa.final_display = feedback_answer
+            else:
+                # 正常模式：使用 LLM 评测
+                qa.is_evaluated = True
+                if self.llm_eval_config.enabled:
+                    llm_result = await self.llm_comparator.evaluate(
+                        question=qa.question,
+                        expected=str(expected_answer),
+                        actual=actual_answer
+                    )
+                    qa.llm_analysis = llm_result.analysis
+                    qa.llm_category = llm_result.category
+                    qa.missing_info = llm_result.missing_info
+                    qa.is_correct = llm_result.is_correct
+                    qa.match_type = llm_result.category  # 使用4级分类作为匹配类型
+                else:
+                    # LLM 评测未启用，标记为未评测
+                    qa.llm_analysis = "LLM 评测未启用"
+                    qa.is_correct = False
+                    qa.match_type = "llm_disabled"
         else:
-            # API调用失败，默认为正常模式但标记错误
+            # API调用失败
             qa.model_output = actual_answer
             qa.final_display = actual_answer
             qa.is_evaluated = True
@@ -213,9 +229,17 @@ class WorkflowBatchProcessor:
             print(f"{prefix}")
             print(f"  ✗ 失败: {qa.error}")
         elif qa.is_evaluated:
-            status = "✓" if qa.is_correct else "✗"
-            print(f"{prefix}")
-            print(f"  {status} 正确 ({qa.match_type})")
+            if qa.llm_category:
+                from obd.models import AnswerCategory
+                category = AnswerCategory(qa.llm_category).label
+                status = "✓" if qa.is_correct else "✗"
+                print(f"{prefix}")
+                print(f"  {status} {category} (4级分类)")
+                if qa.missing_info:
+                    print(f"  缺失: {qa.missing_info}")
+            else:
+                print(f"{prefix}")
+                print(f"  ↔ 未启用 LLM 评测")
         else:
             print(f"{prefix}")
             print(f"  ↔ 异常模式 - 使用反馈答案: {qa.final_display[:50]}...")
@@ -433,6 +457,8 @@ class WorkflowBatchProcessor:
         Returns:
             统计信息字典
         """
+        from obd.models import AnswerCategory
+
         total = len(results)
         if total == 0:
             return {}
@@ -447,7 +473,28 @@ class WorkflowBatchProcessor:
         # 异常模式数量
         feedback_mode_count = sum(1 for qa in results if not qa.is_evaluated and qa.error is None)
 
-        # 按匹配类型统计
+        # 4级分类统计
+        category_stats = {}
+        for qa in evaluated_results:
+            if qa.llm_category:
+                category_stats[qa.llm_category] = category_stats.get(qa.llm_category, 0) + 1
+
+        # 计算4级分类的占比
+        category_percentages = {}
+        if evaluated_count > 0:
+            for category, count in category_stats.items():
+                category_percentages[category] = count / evaluated_count
+
+        # 4级分类详情
+        category_details = {}
+        for category in AnswerCategory:
+            category_details[category.value] = {
+                "count": category_stats.get(category.value, 0),
+                "percentage": category_percentages.get(category.value, 0.0),
+                "label": category.label
+            }
+
+        # 按匹配类型统计（兼容旧版本）
         match_type_stats = {}
         for qa in evaluated_results:
             if qa.match_type:
@@ -457,11 +504,17 @@ class WorkflowBatchProcessor:
             "total": total,
             "evaluated": evaluated_count,  # 参与评测的数量
             "feedback_mode": feedback_mode_count,  # 异常模式数量
+            # 2级分类
             "correct": correct,
             "incorrect": evaluated_count - correct - failed,
             "failed": failed,
             "accuracy": correct / evaluated_count if evaluated_count > 0 else 0,
             "success_rate": (total - failed) / total if total > 0 else 0,
+            # 4级分类
+            "category_stats": category_stats,
+            "category_percentages": category_percentages,
+            "category_details": category_details,
+            # 兼容旧版本
             "match_type_stats": match_type_stats
         }
 
@@ -481,9 +534,19 @@ class WorkflowBatchProcessor:
             statistics: 统计信息
             output_path: 输出文件路径
         """
+        from obd.models import AnswerCategory
+
         # 转换为DataFrame（新增列）
         data = []
         for idx, qa in enumerate(results):
+            # 4级分类标签
+            category_label = "N/A"
+            if qa.llm_category:
+                try:
+                    category_label = AnswerCategory(qa.llm_category).label
+                except ValueError:
+                    category_label = qa.llm_category
+
             data.append({
                 "序号": idx + 1,
                 "问题": qa.question,
@@ -492,6 +555,8 @@ class WorkflowBatchProcessor:
                 "MODEL_OUTPUT": qa.model_output or "",
                 "FINAL_DISPLAY": qa.final_display or "",
                 "IS_CORRECT": "N/A" if qa.is_correct is None else ("✓" if qa.is_correct else "✗"),
+                "4级分类": category_label,
+                "缺失信息": qa.missing_info or "",
                 "匹配类型": qa.match_type or "N/A",
                 "错误信息": qa.error or "",
                 "工作流运行ID": qa.workflow_run_id or "",
@@ -509,13 +574,24 @@ class WorkflowBatchProcessor:
             # 添加统计信息sheet
             stats_data = []
             stats_data.append(["总数量", statistics.get("total", 0)])
-            stats_data.append(["评测数量", statistics.get("evaluated", 0)])  # 新增
-            stats_data.append(["异常模式数量", statistics.get("feedback_mode", 0)])  # 新增
+            stats_data.append(["评测数量", statistics.get("evaluated", 0)])
+            stats_data.append(["异常模式数量", statistics.get("feedback_mode", 0)])
+            stats_data.append(["", ""])  # 分隔行
+            stats_data.append(["--- 2级分类 ---", ""])
             stats_data.append(["正确数量", statistics.get("correct", 0)])
             stats_data.append(["错误数量", statistics.get("incorrect", 0)])
             stats_data.append(["失败数量", statistics.get("failed", 0)])
             stats_data.append(["准确率", f"{statistics.get('accuracy', 0):.2%}"])
             stats_data.append(["成功率", f"{statistics.get('success_rate', 0):.2%}"])
+            stats_data.append(["", ""])  # 分隔行
+            stats_data.append(["--- 4级分类 ---", ""])
+            # 4级分类详情
+            for category in AnswerCategory:
+                details = statistics.get("category_details", {}).get(category.value, {})
+                stats_data.append([
+                    details.get("label", category.label),
+                    f"{details.get('count', 0)} ({details.get('percentage', 0):.2%})"
+                ])
 
             stats_df = pd.DataFrame(stats_data, columns=["指标", "数值"])
             stats_df.to_excel(writer, sheet_name="统计信息", index=False)

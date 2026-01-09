@@ -3,12 +3,26 @@
 import httpx
 import json
 import logging
-from typing import Tuple, Optional
-from obd.models import LLMEvalConfig
+import re
+from dataclasses import dataclass
+from typing import Optional
+from obd.models import LLMEvalConfig, AnswerCategory
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROMPT = """你是一个专业的自动化测试评测员。请对比【问题】、【期望答案】和【实际回答】，判断实际回答是否在语义上与期望答案一致且正确。
+
+@dataclass
+class LLMEvalResult:
+    """LLM评测结果"""
+    is_correct: bool  # 2级分类结果
+    category: str  # 4级分类
+    analysis: str  # 完整分析
+    missing_info: Optional[str]  # 缺失信息
+    important_info: Optional[str]  # 重要信息识别
+
+
+# 详细标准模式提示词
+DETAILED_PROMPT_TEMPLATE = """你是一个专业的RAG系统评测员。请对比【问题】、【期望答案】和【实际回答】，判断实际回答的质量。
 
 【问题】
 {question}
@@ -19,9 +33,67 @@ DEFAULT_PROMPT = """你是一个专业的自动化测试评测员。请对比【
 【实际回答】
 {actual}
 
-请按以下格式输出你的评判：
-判断：[正确/错误]
-分析：[请简洁分析为什么正确或错误，如果实际回答包含了期望答案的关键信息但表述不同，应判定为正确]
+请按照以下标准进行4级分类判断：
+
+**1. 完全正确**
+- 实际回答包含期望答案的所有重要信息（关键事实、参数、数值等）
+- 可以忽略非重要信息的缺失或微小差异
+- 表述方式可以与期望答案不同，但语义一致
+
+**2. 部分缺失**
+- 包含期望答案的部分重要信息
+- 缺少1-2个重要信息点（如某个参数、某个关键步骤）
+- 整体回答合理但不完整
+
+**3. 大量缺失**
+- 包含期望答案的少量信息或不完整信息
+- 缺少多个重要信息点（如多个参数、完整流程等）
+- 或者只回答了部分内容
+
+**4. 完全错误**
+- 完全未回答问题
+- 回答内容与问题无关
+- 提供了错误的信息
+- 只说"不知道"、"无法回答"等
+
+请按以下格式输出：
+
+分类：[完全正确/部分缺失/大量缺失/完全错误]
+分析：[简要说明判断理由，包括回答的优点和缺点]
+缺失信息：[如果是错误类型，列出缺失的具体重要内容]
+重要信息识别：[说明哪些信息是重要的（由LLM智能判断）]
+"""
+
+
+# 自主判断模式提示词
+AUTONOMOUS_PROMPT_TEMPLATE = """你是一个专业的RAG系统评测员。请对比【问题】、【期望答案】和【实际回答】，判断实际回答的质量。
+
+【问题】
+{question}
+
+【期望答案】
+{expected}
+
+【实际回答】
+{actual}
+
+判断原则：
+1. 重点评估实际回答是否包含了期望答案的核心重要信息
+2. 智能识别哪些信息是关键的，哪些是可以忽略的
+3. 根据重要信息的覆盖程度进行4级分类
+
+分类标准：
+- 完全正确：核心重要信息完整覆盖
+- 部分缺失：有少量核心信息缺失
+- 大量缺失：大量核心信息缺失
+- 完全错误：未回答或回答错误
+
+请按以下格式输出：
+
+分类：[完全正确/部分缺失/大量缺失/完全错误]
+分析：[简要说明判断理由，包括识别出的重要信息和评估依据]
+缺失信息：[如果是错误类型，列出缺失的具体重要内容]
+重要信息识别：[说明哪些信息被判断为重要的]
 """
 
 class LLMComparator:
@@ -29,17 +101,84 @@ class LLMComparator:
 
     def __init__(self, config: LLMEvalConfig):
         self.config = config
-        self.prompt_template = config.prompt_template or DEFAULT_PROMPT
+        # 根据模式选择提示词模板
+        if config.prompt_template:
+            self.prompt_template = config.prompt_template
+        elif config.judgment_mode == "detailed":
+            self.prompt_template = DETAILED_PROMPT_TEMPLATE
+        else:  # autonomous
+            self.prompt_template = AUTONOMOUS_PROMPT_TEMPLATE
 
-    async def evaluate(self, question: str, expected: str, actual: str) -> Tuple[bool, str]:
+    @staticmethod
+    def _parse_llm_response(content: str) -> LLMEvalResult:
+        """
+        解析 LLM 返回的结构化响应
+
+        Args:
+            content: LLM 返回的完整文本
+
+        Returns:
+            LLMEvalResult 对象
+        """
+        # 提取分类
+        category_match = re.search(r'分类[：:]\s*(\S+)', content)
+        if category_match:
+            category_str = category_match.group(1)
+            # 映射到枚举值
+            category_map = {
+                "完全正确": "fully_correct",
+                "部分缺失": "partial_missing",
+                "大量缺失": "large_missing",
+                "完全错误": "completely_wrong"
+            }
+            category = category_map.get(category_str, "completely_wrong")
+        else:
+            category = "completely_wrong"
+
+        # 提取分析
+        analysis_match = re.search(
+            r'分析[：:]\s*(.+?)(?=缺失信息|重要信息识别|$)', content, re.DOTALL
+        )
+        analysis = analysis_match.group(1).strip() if analysis_match else content
+
+        # 提取缺失信息
+        missing_match = re.search(
+            r'缺失信息[：:]\s*(.+?)(?=重要信息识别|$)', content, re.DOTALL
+        )
+        missing_info = missing_match.group(1).strip() if missing_match else None
+
+        # 提取重要信息识别
+        important_match = re.search(
+            r'重要信息识别[：:]\s*(.+)', content, re.DOTALL
+        )
+        important_info = important_match.group(1).strip() if important_match else None
+
+        # 判断2级分类
+        is_correct = category == "fully_correct"
+
+        return LLMEvalResult(
+            is_correct=is_correct,
+            category=category,
+            analysis=analysis,
+            missing_info=missing_info,
+            important_info=important_info
+        )
+
+    async def evaluate(self, question: str, expected: str, actual: str) -> LLMEvalResult:
         """
         调用 LLM 进行评测分析
 
         Returns:
-            (是否正确, 分析结果文本)
+            LLMEvalResult 对象（包含2级分类和4级分类）
         """
         if not self.config.enabled or not self.config.api_key:
-            return False, "LLM 评测未启用或未配置 API Key"
+            return LLMEvalResult(
+                is_correct=False,
+                category="completely_wrong",
+                analysis="LLM 评测未启用或未配置 API Key",
+                missing_info=None,
+                important_info=None
+            )
 
         url = f"{self.config.base_url.rstrip('/')}"
         headers = {
@@ -58,7 +197,7 @@ class LLMComparator:
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.0  # 评测需要确定性
+            "temperature": self.config.temperature  # 使用配置的温度参数
         }
 
         try:
@@ -69,14 +208,24 @@ class LLMComparator:
 
             if "choices" in result and len(result["choices"]) > 0:
                 content = result["choices"][0]["message"]["content"].strip()
-                
-                # 简单解析判断结果
-                is_correct = "判断：正确" in content or "判断：[正确]" in content
-                return is_correct, content
+                # 使用结构化解析
+                return self._parse_llm_response(content)
             else:
-                return False, f"API 返回格式异常: {json.dumps(result, ensure_ascii=False)}"
+                return LLMEvalResult(
+                    is_correct=False,
+                    category="completely_wrong",
+                    analysis=f"API 返回格式异常: {json.dumps(result, ensure_ascii=False)}",
+                    missing_info=None,
+                    important_info=None
+                )
 
         except Exception as e:
             error_msg = f"LLM 评测请求失败: {str(e)}"
             logger.error(error_msg)
-            return False, error_msg
+            return LLMEvalResult(
+                is_correct=False,
+                category="completely_wrong",
+                analysis=error_msg,
+                missing_info=None,
+                important_info=None
+            )

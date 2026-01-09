@@ -59,6 +59,8 @@ def load_config(config_path: str = "config.ini") -> dict:
             "model": config.get("LLM_EVAL", "model", fallback="gpt-4o"),
             "timeout": config.getint("LLM_EVAL", "timeout", fallback=30),
             "prompt_template": config.get("LLM_EVAL", "prompt_template", fallback=None),
+            "judgment_mode": config.get("LLM_EVAL", "judgment_mode", fallback="detailed"),
+            "temperature": config.getfloat("LLM_EVAL", "temperature", fallback=0.0),
         }
     }
 
@@ -110,7 +112,7 @@ async def main():
         print(f"对比方法: {config_data['comparison_method']}")
         print(f"并发数量: {config_data['max_workers']}")
         if llm_eval_config.enabled:
-            print(f"LLM 评测: 已启用 (模型: {llm_eval_config.model})")
+            print(f"LLM 评测: 已启用 (模型: {llm_eval_config.model}, 模式: {llm_eval_config.judgment_mode}, 温度: {llm_eval_config.temperature})")
         else:
             print(f"LLM 评测: 未启用")
         if config_data.get('workflow_mapping'):
@@ -144,10 +146,16 @@ async def main():
         print(f"  失败数量: {statistics['failed']}")
         print(f"  准确率: {statistics['accuracy']:.2%}")
         print(f"  成功率: {statistics['success_rate']:.2%}")
-        if statistics.get('match_type_stats'):
-            print(f"  匹配类型统计:")
-            for match_type, count in statistics['match_type_stats'].items():
-                print(f"    - {match_type}: {count}")
+        # 4级分类统计
+        if statistics.get('category_details'):
+            print(f"  4级分类统计:")
+            for category, details in statistics['category_details'].items():
+                print(f"    - {details['label']}: {details['count']} ({details['percentage']:.2%})")
+        else:
+            if statistics.get('match_type_stats'):
+                print(f"  匹配类型统计:")
+                for match_type, count in statistics['match_type_stats'].items():
+                    print(f"    - {match_type}: {count}")
         print("=" * 60)
 
         # 保存结果

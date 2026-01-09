@@ -77,18 +77,27 @@ delay = 0.5
 # 将生成包含详细处理结果和统计信息的Excel文件
 file_path = results.xlsx
 [LLM_EVAL]
-# ???? LLM ??????
-# ???,?????????,??? LLM ?????????(????)
+# 是否启用 LLM 评测
+# true: 启用 LLM 评测，完全依赖 LLM 判断答案是否正确
+# false: 禁用 LLM 评测，不进行评测
 enabled = false
 
-# OpenAI ????? API Key
+# OpenAI 兼容 API Key
 api_key = sk-your-api-key-here
 
-# API ????(?? https://api.openai.com/v1 ?????)
+# API 基础地址（默认使用 OpenAI）
 base_url = https://api.openai.com/v1
 
-# ???????
+# 使用的模型
 model = gpt-4o
 
-# ??????(?)
+# 请求超时时间（秒）
 timeout = 30
+
+# LLM 判断模式
+# detailed: 详细标准模式，在提示词中明确定义每种错误类型的判断标准
+# autonomous: 自主判断模式，只告诉 LLM 判断原则，由 LLM 根据语义自主决定
+judgment_mode = detailed
+
+# LLM 温度参数（0.0-1.0，控制输出的确定性，0.0 最确定）
+temperature = 0.0

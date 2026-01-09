@@ -1,4 +1,4 @@
-# OBD - Dify工作流批处理器
+# OBD - Dify 工作流批处理器
 
 <div align="center">
 
@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)
 
-**一个强大的Dify API批处理工具，支持Excel问答批量处理和答案对比分析**
+**批量调用 Dify API，智能评测答案质量，生成详细分析报告**
 
 </div>
 
@@ -14,20 +14,24 @@
 
 ## 📋 项目简介
 
-OBD (Open Batch Processor) 是一个专门用于批量调用Dify工作流API的Python工具。它可以：
+OBD (Open Batch Processor) 是一个专业的 Dify 工作流批量处理工具，能够自动从 Excel 文件读取问题，批量调用 Dify API，并使用 LLM 进行语义级的答案质量评测。
 
-- 📖 **批量处理**: 从Excel文件读取问题，批量调用Dify API
-- 🎯 **答案对比**: 支持精确、模糊、关键词等多种答案匹配算法
-- 📊 **统计分析**: 自动计算准确率、成功率等关键指标
-- 📈 **结果导出**: 生成详细的Excel处理报告
-- ⚡ **高性能**: 支持本地和云端Dify部署，灵活配置
+### 核心功能
 
-### 🎯 适用场景
+- 📖 **批量处理**: 从 Excel 文件批量读取问题并调用 Dify API
+- 🎯 **智能评测**: 基于 LLM 的语义级答案质量评估
+- 📊 **双层分类**: 支持 2 级分类（正确率）和 4 级分类（详细分析）
+- 📈 **结果导出**: 生成包含分类标签和缺失信息的 Excel 报告
+- ⚡ **高性能**: 支持本地和云端 Dify 部署，灵活配置
+- 🎛️ **双模式提示**: 支持详细标准和智能判断两种 LLM 评测模式
 
-- **教育评估**: 自动批改作业和考试题目
-- **质量检测**: 对比AI回答与标准答案的一致性
-- **数据标注**: 批量验证AI生成内容的质量
-- **API测试**: 测试Dify工作流的响应准确性
+### 适用场景
+
+- **教育评估**: 自动批改作业和考试题目，提供详细评分依据
+- **质量检测**: 对比 AI 回答与标准答案的一致性，识别缺失信息
+- **数据标注**: 批量验证 AI 生成内容的质量，提供改进建议
+- **API 测试**: 测试 Dify 工作的响应准确性，支持多维度评测
+- **RAG 优化**: 评估检索增强生成系统的答案质量和完整性
 
 ---
 
@@ -42,339 +46,182 @@ OBD (Open Batch Processor) 是一个专门用于批量调用Dify工作流API的P
 
 ### 安装步骤
 
-#### 1. 环境准备
 ```bash
-# 检查 Python 版本
-python --version  # 需要 3.11+
-
-# 安装 uv (推荐) 或 pip
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-#### 2. 克隆项目
-```bash
+# 1. 克隆项目
 git clone <repository-url>
 cd obd
 
-# 创建虚拟环境
+# 2. 创建虚拟环境
 uv venv
 
-# 激活虚拟环境
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-```
+# 3. 激活虚拟环境
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
 
-#### 3. 安装依赖
-```bash
-# 安装项目依赖
+# 4. 安装依赖
 uv pip install -r requirements.txt
-
-# 或安装开发依赖（包含测试工具）
-uv pip install -e ".[dev]"
 ```
 
-### 配置设置
+---
 
-#### 1. 创建配置文件
+## ⚙️ 配置指南
+
+### 1. 创建配置文件
+
 ```bash
-# 复制配置模板
 cp config.ini.example config.ini
 ```
 
-#### 2. 编辑配置文件
+### 2. 配置关键参数
+
+编辑 `config.ini`，至少配置以下参数：
+
 ```ini
 [Dify]
-# ✅ 替换为你的Dify API密钥
+# 必填：Dify API密钥
 api_key = app-your-api-key-here
 
-# ✅ 选择Dify服务地址
-# 云端Dify (默认)
+# 必填：Dify服务地址
 base_url = https://api.dify.ai/v1
-# 或本地Dify
-# base_url = http://localhost/v1
 
 [Excel]
-# Excel文件路径
+# 必填：Excel文件路径
 file_path = questions.xlsx
 
-# ✅ 确认列名与Excel文件一致
-question_column = question
-answer_column = answer
+# 必填：问题和答案的列名
+question_column = PROBLEM_VALUE
+answer_column = ANSWER_VALUE
 
-[Workflow]
-# 答案对比方法
-# exact: 精确匹配 | fuzzy: 模糊匹配 | keyword: 关键词匹配 | auto: 自动选择
-comparison_method = auto
-
-# 请求间隔（秒，避免限流）
-delay = 0.5
+[LLM_EVAL]
+# 可选：启用LLM智能评测
+enabled = true
+api_key = sk-your-openai-key-here
+base_url = https://api.openai.com/v1
+model = gpt-4o
 ```
 
-#### 3. 准备Excel文件
-```excel
-|     question     |    answer     |
-|------------------|---------------|
-| 请计算123+456=? | 579           |
-| 北京是首都吗？   | 是            |
-| 5的立方是多少？   | 125           |
-```
+### 3. 准备 Excel 文件
 
-### 运行示例
+确保 Excel 文件包含问题和答案两列（列名需与配置一致）：
 
-#### 命令行运行
+| PROBLEM_VALUE | ANSWER_VALUE |
+|--------------|--------------|
+| 请计算123+456=? | 579 |
+| 北京是首都吗？ | 是 |
+
+> 💡 **更多配置选项**：查看完整配置说明请参考 [.spec/setup.md](.spec/setup.md)
+
+---
+
+## 📖 使用方法
+
+### 命令行运行
+
 ```bash
-# 基础运行
+# 使用默认配置文件 config.ini
 uv run python -m obd.main
 
-# 指定配置文件
-uv run python -m obd.main --config custom_config.ini
+# 指定自定义配置文件
+uv run python -m obd.main --config my_config.ini
 ```
 
-**预期输出:**
-```
-============================================================
-Dify工作流批处理器 - 真实API测试
-============================================================
-加载配置: {...}
-处理Excel文件: questions.xlsx
-共 3 行，处理第 0 行到第 2 行
-------------------------------------------------------------
-[1/3] 处理问题: 请计算123+456=?...  ✓ 正确 (keyword)
-[2/3] 处理问题: 北京是首都吗？...    ✓ 正确 (keyword)
-[3/3] 处理问题: 5的立方是多少？...    ✓ 正确 (keyword)
+### 输出说明
 
-============================================================
-统计结果:
-  总数量: 3
-  正确数量: 3
-  错误数量: 0
-  失败数量: 0
-  准确率: 100.00%
-  成功率: 100.00%
-============================================================
+程序运行后会生成 Excel 文件，包含：
 
-结果已保存到: results.xlsx
-```
-
-#### 程序化调用
-```python
-from obd.models import WorkflowConfig
-from obd.processor import WorkflowBatchProcessor
-
-# 创建配置
-config = WorkflowConfig(
-    api_key="app-your-api-key",
-    base_url="http://localhost/v1"
-)
-
-# 创建处理器
-processor = WorkflowBatchProcessor(config)
-
-# 批量处理
-results = processor.process_excel(
-    excel_path="questions.xlsx",
-    comparison_method="keyword"
-)
-
-# 查看统计
-stats = processor.calculate_statistics(results)
-print(f"准确率: {stats['accuracy']:.1%}")
-```
+- **主工作表**：每道题的评测结果、4级分类、缺失信息
+- **统计工作表**：总体正确率、4级分类分布
 
 ---
 
-## 🔧 API文档
+## 🤖 LLM 智能评测
 
-### 核心接口
+### 双层分类体系
 
-#### 1. Dify API端点
+**2 级分类（用于计算正确率）**:
+- **正确**: 重要信息全覆盖，可忽略非重要信息缺失
+- **错误**: 任何不符合正确标准的情况
 
-**POST** `{base_url}/chat-messages`
+**4 级分类（用于详细分析）**:
+- **完全正确** (`fully_correct`): 重要信息全覆盖
+- **部分缺失** (`partial_missing`): 有少量重要信息缺失
+- **大量缺失** (`large_missing`): 很多信息（参数等）缺少
+- **完全错误** (`completely_wrong`): 完全错误/未回答
 
-**请求参数:**
-```json
-{
-    "query": "用户输入的问题",
-    "inputs": {},
-    "response_mode": "blocking",
-    "user": "用户标识",
-    "conversation_id": "",
-    "workflow_id": "可选的工作流ID"
-}
-```
+### 判断模式
 
-**响应示例:**
-```json
-{
-    "event": "message",
-    "task_id": "task_123",
-    "answer": "123 + 456 = 579",
-    "mode": "advanced-chat"
-}
-```
-
-#### 2. 答案对比算法
-
-| 算法 | 说明 | 适用场景 |
+| 模式 | 说明 | 适用场景 |
 |------|------|----------|
-| **exact** | 精确匹配（忽略大小写和空格） | 数字、代码、标准化答案 |
-| **fuzzy** | 模糊匹配（相似度≥0.8） | 表述相近的答案 |
-| **keyword** | 关键词匹配 | 包含关键信息的答案 |
-| **auto** | 自动选择（推荐） | 按优先级尝试所有算法 |
+| **detailed** | 明确定义每种错误类型的判断标准 | 需要严格评判标准 |
+| **autonomous** | 让 LLM 根据语义自主判断 | 需要灵活理解 |
 
-#### 3. 配置参数详解
+**温度参数建议**：
+- `0.0`: 最确定（推荐评测使用）
+- `0.3-0.7`: 平衡
+- `1.0`: 最随机（不推荐评测使用）
 
-```python
-@dataclass
-class WorkflowConfig:
-    api_key: str                    # Dify API密钥
-    base_url: str = "https://api.dify.ai/v1"  # API地址
-    response_mode: str = "blocking" # 响应模式
-    timeout: int = 60               # 超时时间(秒)
-    user: str = "batch_processor"   # 用户标识
-```
-
-### 错误处理
-
-| 错误码 | 说明 | 解决方案 |
-|--------|------|----------|
-| 401 | API密钥无效 | 检查api_key配置 |
-| 400 | 参数错误 | 检查请求格式 |
-| 429 | 请求过频 | 增加delay参数 |
-| 500 | 服务器错误 | 稍后重试 |
+> 💡 **详细说明**：查看 [.spec/comparator.md](.spec/comparator.md) 了解 LLM 评测原理
 
 ---
 
-## 📁 项目结构
+## ❓ 常见问题
 
-```
-obd/
-├── .spec/                           # 项目文档
-│   ├── README.md                     # 文档导航
-│   ├── api.md                        # API接口文档
-│   ├── models.md                     # 数据模型文档
-│   └── ...
-├── src/
-│   └── obd/                         # 主包
-│       ├── __init__.py
-│       ├── main.py                   # 程序入口
-│       ├── models.py                 # 数据模型
-│       ├── client/                   # API客户端
-│       │   └── dify_client.py        # Dify API封装
-│       ├── comparator/              # 答案对比
-│       │   └── answer_comparator.py  # 匹配算法
-│       └── processor/                # 批处理
-│           └── batch_processor.py    # 批处理核心
-├── tests/                           # 测试目录
-├── config.ini                       # 配置文件(请勿提交)
-├── config.ini.example              # 配置模板
-├── requirements.txt                # 依赖列表
-└── pyproject.toml                   # 项目配置
-```
+### 配置相关
 
----
+**Q: 提示 "API Key 无效" 怎么办？**
+A: 检查 `[Dify]` 和 `[LLM_EVAL]` 中的 `api_key` 配置是否正确。
 
-## 🛠️ 开发指南
+**Q: 如何配置多个知识库？**
+A: 使用 `[WORKFLOW_MAPPING]` 节点，格式为 `知识库名 = API Key`。
 
-### 本地开发
+**Q: Excel 列名和配置不一致怎么办？**
+A: 确保配置文件中的 `question_column` 和 `answer_column` 与 Excel 实际列名完全一致（区分大小写）。
 
-```bash
-# 克隆项目
-git clone <repo-url>
-cd obd
-uv venv
-source .venv/bin/activate
+### 运行相关
 
-# 安装开发依赖
-uv pip install -e ".[dev]"
+**Q: 处理速度太慢怎么办？**
+A: 可以调整 `[Workflow]` 中的 `delay` 参数（默认 0.5 秒），适当减少延迟可提升速度。
 
-# 运行测试
-uv run pytest
+**Q: 遇到 API 限流怎么办？**
+A: 增大 `delay` 参数，或分批次处理大文件。
 
-# 代码格式化
-uv run black src/ tests/
-uv run ruff check src/ tests/
+**Q: LLM 评测不准确怎么办？**
+A: 尝试切换 `judgment_mode` 为 `detailed`，或设置 `temperature` 为 `0.0` 提高一致性。
 
-# 类型检查
-uv run mypy src/
-```
+### 输出相关
 
-### TDD开发流程
+**Q: 如何解读 4 级分类结果？**
+A:
+- **完全正确**: 答案质量优秀，无需改进
+- **部分缺失**: 缺少少量重要信息，可以补充完善
+- **大量缺失**: 缺少多个关键信息，需要大幅改进
+- **完全错误**: 答案完全错误或未回答，需要重新生成
 
-1. **红**: 写测试，看到失败
-2. **绿**: 写最少的代码让测试通过
-3. **重构**: 优化代码结构
-
-```bash
-# 运行特定测试
-uv run pytest tests/test_client.py -v
-
-# 运行测试并生成覆盖率
-uv run pytest --cov=src --cov-report=html
-
-# 持续测试（文件变化时自动运行）
-uv run pytest --watch
-```
+> 💡 **更多问题**：查看 [.spec/troubleshooting.md](.spec/troubleshooting.md)
 
 ---
 
-## 📊 性能优化
+## 📁 文档导航
 
-### 大文件处理
-```python
-# 分批处理大文件
-def process_large_file(file_path, batch_size=500):
-    processor = WorkflowBatchProcessor(config)
-
-    for chunk in pd.read_excel(file_path, chunksize=batch_size):
-        temp_file = f"temp_{chunk_index}.xlsx"
-        chunk.to_excel(temp_file, index=False)
-        results = processor.process_excel(temp_file)
-        # 合并结果...
-        os.remove(temp_file)
-```
-
-### 并发处理（实验性）
-```python
-import asyncio
-import aiohttp
-
-async def async_process(questions, config, max_concurrent=3):
-    # 实现异步API调用
-    # 注意：不要设置过高的并发数
-    pass
-```
-
----
-
-## 📈 监控指标
-
-- **处理速度**: 行/分钟
-- **成功率**: (total - failed) / total
-- **准确率**: correct / total
-- **平均延迟**: API响应时间
-- **内存使用**: 峰值内存占用
+| 文档 | 说明 |
+|------|------|
+| [.spec/setup.md](.spec/setup.md) | 完整配置教程 |
+| [.spec/quickstart.md](.spec/quickstart.md) | 详细快速开始指南 |
+| [.spec/api.md](.spec/api.md) | API 接口文档 |
+| [.spec/examples.md](.spec/examples.md) | 使用示例（含程序化调用）|
+| [.spec/troubleshooting.md](.spec/troubleshooting.md) | 问题排查指南 |
+| [CLAUDE.md](CLAUDE.md) | 开发规范（面向开发者）|
 
 ---
 
 ## 🤝 贡献指南
 
-### 开发流程
-1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 遵循 TDD 开发
-4. 运行测试 (`uv run pytest`)
-5. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-6. 推送到分支 (`git push origin feature/AmazingFeature`)
-7. 创建 Pull Request
+欢迎贡献代码！请遵循以下流程：
 
-### 代码规范
-- 使用 Black 格式化代码
-- 遵循 PEP 8 命名规范
-- 添加类型注解
-- 编写测试用例
+1. Fork 项目并创建功能分支
+2. 遵循开发规范（[CLAUDE.md](CLAUDE.md)）
+3. 运行测试确保通过：`uv run pytest`
+4. 提交更改并创建 Pull Request
 
 ---
 
@@ -388,14 +235,13 @@ async def async_process(questions, config, max_concurrent=3):
 
 - **问题反馈**: [GitHub Issues](../../issues)
 - **功能建议**: [GitHub Discussions](../../discussions)
-- **技术支持**: [邮箱](mailto:support@example.com)
 
 ---
 
 ## 🙏 致谢
 
-- [Dify](https://docs.dify.ai/) - 强大的AI应用平台
-- [uv](https://docs.astral.sh/uv/) - 快速的Python包管理器
+- [Dify](https://docs.dify.ai/) - 强大的 AI 应用平台
+- [uv](https://docs.astral.sh/uv/) - 快速的 Python 包管理器
 - [pandas](https://pandas.pydata.org/) - 强大的数据处理库
 
 ---
