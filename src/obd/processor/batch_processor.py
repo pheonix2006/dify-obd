@@ -44,6 +44,7 @@ class WorkflowBatchProcessor:
         
         # 共享异步客户端
         self._async_client = httpx.AsyncClient(timeout=config.timeout)
+        self._file_lock = asyncio.Lock()
 
     async def close(self):
         """关闭资源"""
@@ -71,6 +72,67 @@ class WorkflowBatchProcessor:
             df = pd.read_csv(excel_path)
 
         return df
+
+    def _load_results_from_excel(self, output_path: str) -> List[QuestionAnswer]:
+        """从现有的Excel文件中加载已处理的结果"""
+        if not os.path.exists(output_path):
+            return []
+        
+        try:
+            import pandas as pd
+            df = pd.read_excel(output_path, sheet_name="处理结果")
+            results = []
+            for _, row in df.iterrows():
+                # 尝试解析 IS_CORRECT
+                is_correct = None
+                if row.get("IS_CORRECT") == "✓":
+                    is_correct = True
+                elif row.get("IS_CORRECT") == "✗":
+                    is_correct = False
+                
+                # 尝试还原 4级分类
+                llm_category = None
+                category_label = row.get("4级分类")
+                from obd.models import AnswerCategory
+                for cat in AnswerCategory:
+                    if cat.label == category_label:
+                        llm_category = cat.value
+                        break
+                
+                qa = QuestionAnswer(
+                    question=str(row.get("问题", "")),
+                    expected_answer=str(row.get("期望答案", "")),
+                    original_index=int(row.get("序号", 0)) - 1 if pd.notna(row.get("序号")) else None,
+                    workflow_result=row.get("MODEL_OUTPUT", ""),
+                    is_correct=is_correct,
+                    match_type=row.get("匹配类型", ""),
+                    workflow_run_id=row.get("工作流运行ID", ""),
+                    error=row.get("错误信息") if pd.notna(row.get("错误信息")) and row.get("错误信息") != "" else None,
+                    knowledge_base=row.get("知识库", ""),
+                    model_output=row.get("MODEL_OUTPUT", ""),
+                    final_display=row.get("FINAL_DISPLAY", ""),
+                    is_evaluated=True if row.get("是否评测") == "是" else False,
+                    used_api_key=row.get("USED_API_KEY", ""),
+                )
+                qa.llm_category = llm_category
+                qa.llm_analysis = row.get("LLM 评测分析", "N/A" if row.get("LLM 评测分析") == "N/A" else row.get("LLM 评测分析"))
+                qa.missing_info = row.get("缺失信息", "")
+                
+                results.append(qa)
+            return results
+        except Exception as e:
+            logger.warning(f"读取现有结果文件失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    async def _save_incremental_all(self, results: List[QuestionAnswer], output_path: str):
+        """增量保存所有当前结果"""
+        async with self._file_lock:
+            # 排序以保持顺序
+            sorted_results = sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
+            stats = self.calculate_statistics(sorted_results)
+            self.save_results(sorted_results, stats, output_path)
 
     async def process_row_with_routing(
         self,
@@ -128,6 +190,7 @@ class WorkflowBatchProcessor:
         qa = QuestionAnswer(question=question, expected_answer=str(expected_answer))
         qa.knowledge_base = knowledge_base
         qa.used_api_key = api_key[-4:] if api_key else None
+        qa.original_index = idx
 
         # 2. API调用（使用动态API Key）
         try:
@@ -294,6 +357,7 @@ class WorkflowBatchProcessor:
     async def process_excel(
         self,
         excel_path: str,
+        output_path: Optional[str] = None,
         question_column: str = "question",
         answer_column: str = "answer",
         input_variable_name: str = "query",
@@ -309,6 +373,7 @@ class WorkflowBatchProcessor:
 
         Args:
             excel_path: Excel文件路径
+            output_path: 输出文件路径（用于增量保存和恢复）
             question_column: 问题列名（兼容旧版）
             answer_column: 答案列名（兼容旧版）
             input_variable_name: 工作流输入变量名
@@ -329,7 +394,7 @@ class WorkflowBatchProcessor:
 
         if is_new_mode:
             print(f"使用新模式：路由分发 + 评测分支 (并发数: {self.config.max_workers})")
-            return await self._process_excel_new_mode(df, start_row, end_row, delay)
+            return await self._process_excel_new_mode(df, start_row, end_row, delay, output_path)
         else:
             print(f"使用旧模式：单API Key + 全量评测 (并发数: {self.config.max_workers})")
             return await self._process_excel_legacy_mode(
@@ -342,7 +407,8 @@ class WorkflowBatchProcessor:
                 start_row,
                 end_row,
                 delay,
-                workflow_id
+                workflow_id,
+                output_path
             )
 
     async def _process_excel_new_mode(
@@ -350,7 +416,8 @@ class WorkflowBatchProcessor:
         df: pd.DataFrame,
         start_row: int,
         end_row: Optional[int],
-        delay: float
+        delay: float,
+        output_path: Optional[str] = None
     ) -> List[QuestionAnswer]:
         """处理Excel（新模式）"""
         total_rows = len(df)
@@ -360,19 +427,46 @@ class WorkflowBatchProcessor:
         print(f"共 {total_rows} 行，处理第 {start_row} 行到第 {end_row-1} 行")
         print("-" * 60)
 
+        results = []
+        processed_indices = set()
+        
+        # 加载现有结果实现支持断点续传
+        if output_path and os.path.exists(output_path):
+            existing_results = self._load_results_from_excel(output_path)
+            if existing_results:
+                results.extend(existing_results)
+                # 记录已处理的问题索引
+                processed_indices = {r.original_index for r in existing_results if r.original_index is not None}
+                print(f"检测到断点：已从现有结果中加载了 {len(existing_results)} 条已处理记录。")
+        
+        # 确定真正需要处理的行
+        remaining_indices = [i for i in range(start_row, end_row) if i not in processed_indices]
+        
+        if not remaining_indices:
+            print("所有指定范围内的记录已在之前处理完成。")
+            return results
+
+        print(f"还需处理 {len(remaining_indices)} 条新记录")
+
         # 创建信号量
         semaphore = asyncio.Semaphore(self.config.max_workers)
         
-        tasks = []
-        for idx in range(start_row, end_row):
+        async def run_task(idx):
             row = df.iloc[idx]
-            tasks.append(self.process_row_with_routing(row, idx, total_rows, semaphore))
+            res = await self.process_row_with_routing(row, idx, total_rows, semaphore)
+            if res:
+                results.append(res)
+                if output_path:
+                    # 每完成一个就增量保存
+                    await self._save_incremental_all(results, output_path)
+            return res
 
         # 并发执行
-        all_results = await asyncio.gather(*tasks)
+        tasks = [run_task(idx) for idx in remaining_indices]
+        await asyncio.gather(*tasks)
         
-        # 过滤 None（跳过的行）并保持顺序
-        return [r for r in all_results if r is not None]
+        # 排序并返回最终结果
+        return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
 
     async def _process_excel_legacy_mode(
         self,
@@ -385,7 +479,8 @@ class WorkflowBatchProcessor:
         start_row: int,
         end_row: Optional[int],
         delay: float,
-        workflow_id: Optional[str]
+        workflow_id: Optional[str],
+        output_path: Optional[str] = None
     ) -> List[QuestionAnswer]:
         """处理Excel（旧模式）"""
         # 检查必需的列
@@ -402,6 +497,23 @@ class WorkflowBatchProcessor:
 
         print(f"共 {total_rows} 行，处理第 {start_row} 行到第 {end_row-1} 行")
         print("-" * 60)
+
+        results = []
+        processed_indices = set()
+        
+        # 加载现有结果实现支持断点续传
+        if output_path and os.path.exists(output_path):
+            existing_results = self._load_results_from_excel(output_path)
+            if existing_results:
+                results.extend(existing_results)
+                processed_indices = {r.original_index for r in existing_results if r.original_index is not None}
+                print(f"检测到断点：已从现有结果中加载了 {len(existing_results)} 条已处理记录。")
+        
+        remaining_indices = [i for i in range(start_row, end_row) if i not in processed_indices]
+        
+        if not remaining_indices:
+            print("所有指定范围内的记录已在之前处理完成。")
+            return results
 
         semaphore = asyncio.Semaphore(self.config.max_workers)
 
@@ -422,6 +534,7 @@ class WorkflowBatchProcessor:
                     workflow_id=workflow_id
                 )
                 qa.expected_answer = expected_answer
+                qa.original_index = idx
 
             # 对比答案
             if qa.workflow_result and not qa.error:
@@ -442,12 +555,15 @@ class WorkflowBatchProcessor:
             else:
                 print(f"  ✗ 失败: {qa.error}")
             
+            results.append(qa)
+            if output_path:
+                await self._save_incremental_all(results, output_path)
             return qa
 
-        tasks = [process_task(i) for i in range(start_row, end_row)]
-        results = await asyncio.gather(*tasks)
+        tasks = [process_task(i) for i in remaining_indices]
+        await asyncio.gather(*tasks)
 
-        return results
+        return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
 
     def calculate_statistics(self, results: List[QuestionAnswer]) -> Dict[str, Any]:
         """
@@ -540,17 +656,19 @@ class WorkflowBatchProcessor:
 
         # 转换为DataFrame（新增列）
         data = []
-        for idx, qa in enumerate(results):
+        for qa in results:
             # 4级分类标签
             category_label = "N/A"
             if qa.llm_category:
                 try:
                     category_label = AnswerCategory(qa.llm_category).label
-                except ValueError:
-                    category_label = qa.llm_category
+                except (ValueError, AttributeError):
+                    category_label = str(qa.llm_category)
+
+            display_idx = (qa.original_index + 1) if qa.original_index is not None else len(data) + 1
 
             data.append({
-                "序号": idx + 1,
+                "序号": display_idx,
                 "问题": qa.question,
                 "知识库": qa.knowledge_base or "",
                 "期望答案": qa.expected_answer,
@@ -567,7 +685,10 @@ class WorkflowBatchProcessor:
                 "LLM 评测分析": qa.llm_analysis or "N/A"
             })
 
+        # 确保按序号排序
         df = pd.DataFrame(data)
+        if "序号" in df.columns:
+            df = df.sort_values("序号")
 
         # 保存Excel
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:

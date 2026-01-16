@@ -84,6 +84,7 @@ class QuestionAnswer:
     """问题-答案对"""
     question: str
     expected_answer: str
+    original_index: Optional[int] = None  # 原始行索引
     workflow_result: Optional[str] = None
     is_correct: bool = False
     match_type: Optional[str] = None  # exact, fuzzy, keyword, semantic, llm

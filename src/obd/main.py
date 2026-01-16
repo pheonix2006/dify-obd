@@ -123,6 +123,7 @@ async def main():
         # 处理Excel
         results = await processor.process_excel(
             excel_path=config_data["excel_path"],
+            output_path=config_data["output_path"],
             question_column=config_data["question_column"],
             answer_column=config_data["answer_column"],
             input_variable_name=config_data["input_variable_name"],
