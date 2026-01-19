@@ -258,7 +258,226 @@ obd/
 - **类型检查**: 使用 MyPy 进行类型验证
 - **命名规范**: 遵循 PEP 8 标准
 
-#### 设计原则应用
+---
+
+## 🔧 Serena LSP 工具使用规范
+
+### 核心原则
+
+**优先使用 Serena 符号工具，避免读取整个文件！**
+
+Serena 提供的 LSP 工具可以精确提取代码符号信息，大幅减少上下文使用量。对于代码探索和编辑任务，必须遵循以下策略：
+
+### 符号探索流程
+
+#### 1. 快速获取概览
+
+**场景**：需要了解某个文件的结构
+
+```
+使用 get_symbols_overview(rel_path)
+→ 获取该文件所有顶级符号及其类型
+→ 按需深入特定符号
+```
+
+**示例**：
+```
+查询 src/obd/models.py 的结构
+→ 得到类列表：Config、ProcessConfig、EvaluationResult 等
+→ 决定需要读取哪个类的详细信息
+```
+
+#### 2. 查找特定符号
+
+**场景**：知道符号名称，需要定位和了解它
+
+```
+使用 find_symbol(
+    name_path_pattern="类名/方法名",
+    relative_path="文件路径",
+    depth=0/1,           # 0=仅符号信息, 1=包含子符号
+    include_body=False   # 暂不读取实现
+)
+```
+
+**路径模式规则**：
+- **简单名称**: `"process"` 匹配任何名为 process 的符号
+- **相对路径**: `"BatchProcessor/process"` 匹配 BatchProcessor 类中的 process 方法
+- **绝对路径**: `"/BatchProcessor/process"` 要求完整路径匹配
+- **重载方法**: `"Foo/process[1]"` 匹配特定重载
+
+#### 3. 读取符号实现
+
+**仅在选择出目标后，使用 include_body=True**
+
+```python
+# 错误：一次性读取所有方法
+find_symbol("Foo", include_body=True, depth=1)
+
+# 正确：先概览，再选择性读取
+find_symbol("Foo", depth=1)  # 仅获取方法列表
+# 用户确认需要读取哪个方法后
+find_symbol("Foo/process", include_body=True)
+```
+
+#### 4. 理解符号关系
+
+**场景**：找出谁使用了某个符号
+
+```
+使用 find_referencing_symbols(
+    name_path="目标符号路径",
+    relative_path="文件路径"
+)
+→ 获取所有引用位置和上下文代码片段
+```
+
+### 非代码文件搜索
+
+**场景**：不知道符号名称，或搜索非代码内容
+
+```
+使用 search_for_pattern(
+    substring_pattern="正则表达式",
+    relative_path="目录路径",        # 限制搜索范围
+    context_lines_before=2,          # 前后行数
+    context_lines_after=2
+)
+→ 获取匹配行及上下文
+```
+
+### 代码编辑最佳实践
+
+#### 符号级编辑（推荐）
+
+**适用场景**：修改整个函数/类/方法
+
+```
+1. find_symbol 获取符号
+2. replace_symbol_body 替换整个定义
+3. find_referencing_symbols 检查引用，确保兼容性
+```
+
+#### 插入式编辑
+
+**在文件开头插入**：
+```python
+insert_before_symbol(
+    name_path="第一个顶级符号",
+    relative_path="文件.py",
+    body="import statements\n"
+)
+```
+
+**在文件末尾插入**：
+```python
+insert_after_symbol(
+    name_path="最后一个顶级符号",
+    relative_path="文件.py",
+    body="new class/function\n"
+)
+```
+
+#### 文件级编辑（谨慎使用）
+
+仅适用于小规模、局部的代码修改（如修正几个变量名）
+
+### 工具选择决策树
+
+```
+开始探索代码
+    │
+    ├─ 知道文件路径？
+    │   ├─ 是 → get_symbols_overview(rel_path)
+    │   │       ├─ 需要特定符号？ → find_symbol(name_path)
+    │   │       └─ 已足够？
+    │   └─ 否 → 搜索文件 → find_file(mask, path)
+    │
+    ├─ 知道符号名称？
+    │   └─ 是 → find_symbol(name_path, substring_matching=True)
+    │
+    └─ 仅知道代码特征？
+        └─ 是 → search_for_pattern(regex, restrict_search_to_code_files=True)
+```
+
+### 禁用操作
+
+**不要这样做**：
+
+❌ 直接读取整个文件：`Read(file_path)`
+❌ 使用 Bash grep/rg：`Bash("grep pattern file.py")`
+❌ 不必要的全文搜索：未限制 `relative_path` 的模式搜索
+
+### Memory 系统
+
+**场景**：需要在多次会话间共享的项目级知识
+
+```python
+# 创建项目记忆（如架构决策）
+write_memory(
+    memory_file_name="architecture_decisions.md",
+    content="## 为什么选择 httpx\n..."
+)
+
+# 需要时读取
+read_memory(memory_file_name="architecture_decisions.md")
+```
+
+### 性能优化技巧
+
+1. **限制搜索范围**：始终提供 `relative_path` 参数
+2. **分步探索**：先概览，再深入
+3. **按需读取**：只在确定目标后才 `include_body=True`
+4. **优先符号搜索**：比模式搜索更精确、更快
+5. **利用 depth 参数**：控制子符号层级获取
+
+### 实际示例
+
+**示例 1：修改 BatchProcessor 的 process 方法**
+
+```python
+# 1. 找到符号
+find_symbol("BatchProcessor/process", relative_path="processor/batch_processor.py")
+
+# 2. 读取实现（仅在选择该目标后）
+find_symbol("BatchProcessor/process", include_body=True, relative_path="...")
+
+# 3. 检查引用
+find_referencing_symbols(name_path="BatchProcessor/process", relative_path="...")
+
+# 4. 替换实现
+replace_symbol_body(name_path="BatchProcessor/process", relative_path="...", body="...")
+```
+
+**示例 2：查找所有使用 Config 的地方**
+
+```python
+# 1. 先找到 Config 类
+find_symbol("Config", relative_path="models.py")
+
+# 2. 查找所有引用
+find_referencing_symbols(
+    name_path="Config",
+    relative_path="models.py",
+    max_answer_chars=50000  # 限制结果大小
+)
+**示例 3：在未知位置搜索 Dify API 调用**
+
+```python
+# 1. 模式搜索
+search_for_pattern(
+    substring_pattern="def.*workflow.*run|DifyClient",
+    restrict_search_to_code_files=True,
+    paths_include_glob="**/*.py"
+)
+
+# 2. 从结果中选择目标文件
+# 3. 对目标文件使用符号工具深入探索
+```
+
+---
+
+### 6. 设计原则应用
 
 **SOLID 原则**:
 - **S** (单一职责): 每个类/函数只做一件事
