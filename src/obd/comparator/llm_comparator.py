@@ -17,10 +17,18 @@ class LLMEvalResult:
     is_correct: bool  # 2级分类结果
     category: str  # 4级分类
     analysis: str  # 完整分析
-    missing_info: Optional[str]  # 缺失信息
-    important_info: Optional[str]  # 重要信息识别
+    missing_info: Optional[str] = None  # 缺失信息（兼容旧版）
+    important_info: Optional[str] = None  # 重要信息识别（兼容旧版）
     prompt: Optional[str] = None  # LLM 评测提示词（调试用）
     raw_response: Optional[str] = None  # LLM 原始响应（JSON 格式，用于调试分析）
+
+    # 新增：各维度独立分析字段
+    retrieval_quality: Optional[str] = None  # 召回质量评估
+    basis_analysis: Optional[str] = None  # 基于性分析
+    accuracy_analysis: Optional[str] = None  # 准确性分析
+    completeness_analysis: Optional[str] = None  # 完整性分析
+    version_analysis: Optional[str] = None  # 版本对比分析
+    overall_judgment: Optional[str] = None  # 总体判断
 
 
 # 详细标准模式提示词
@@ -155,7 +163,7 @@ class LLMComparator:
             content_lower = content.lower()
             if "完全正确" in content or "fully correct" in content_lower:
                 category = "fully_correct"
-            elif "部分缺失" in content or "partial" in content_lower and "missing" in content_lower:
+            elif "部分缺失" in content or ("partial" in content_lower and "missing" in content_lower):
                 category = "partial_missing"
             elif "大量缺失" in content or ("large" in content_lower and "missing" in content_lower):
                 category = "large_missing"
@@ -166,23 +174,90 @@ class LLMComparator:
                     f"响应预览: {content[:200]}..."
                 )
 
-        # 提取分析部分
-        analysis_match = re.search(
-            r'分析[：:]\s*(.+?)(?=缺失信息|重要信息识别|$)', content, re.DOTALL
+        # 提取召回质量评估（新增）
+        retrieval_match = re.search(
+            r'召回质量评估[：:]\s*(.+?)(?=基于性分析|准确性分析|完整性分析|版本对比分析|总体判断|$)',
+            content, re.DOTALL
         )
-        analysis = analysis_match.group(1).strip() if analysis_match else content
+        retrieval_quality = retrieval_match.group(1).strip() if retrieval_match else None
 
-        # 提取缺失信息
+        # 提取基于性分析（新增）
+        basis_match = re.search(
+            r'基于性分析[：:]\s*(.+?)(?=准确性分析|完整性分析|版本对比分析|总体判断|$)',
+            content, re.DOTALL
+        )
+        basis_analysis = basis_match.group(1).strip() if basis_match else None
+
+        # 提取准确性分析（新增）
+        accuracy_match = re.search(
+            r'准确性分析[：:]\s*(.+?)(?=完整性分析|版本对比分析|总体判断|$)',
+            content, re.DOTALL
+        )
+        accuracy_analysis = accuracy_match.group(1).strip() if accuracy_match else None
+
+        # 提取完整性分析（新增）
+        completeness_match = re.search(
+            r'完整性分析[：:]\s*(.+?)(?=版本对比分析|总体判断|$)',
+            content, re.DOTALL
+        )
+        completeness_analysis = completeness_match.group(1).strip() if completeness_match else None
+
+        # 提取版本对比分析（新增，可选字段）
+        version_match = re.search(
+            r'版本对比分析[：:]\s*(.+?)(?=总体判断|$)',
+            content, re.DOTALL
+        )
+        version_analysis = version_match.group(1).strip() if version_match else None
+
+        # 提取总体判断（新增）
+        overall_match = re.search(
+            r'总体判断[：:]\s*(.+)',
+            content, re.DOTALL
+        )
+        overall_judgment = overall_match.group(1).strip() if overall_match else None
+
+        # 组合完整分析（用于 Excel "LLM 评测分析" 列）
+        analysis_parts = []
+        if retrieval_quality:
+            analysis_parts.append(f"召回质量评估：{retrieval_quality}")
+        if basis_analysis:
+            analysis_parts.append(f"基于性分析：{basis_analysis}")
+        if accuracy_analysis:
+            analysis_parts.append(f"准确性分析：{accuracy_analysis}")
+        if completeness_analysis:
+            analysis_parts.append(f"完整性分析：{completeness_analysis}")
+        if version_analysis:
+            analysis_parts.append(f"版本对比分析：{version_analysis}")
+        if overall_judgment:
+            analysis_parts.append(f"总体判断：{overall_judgment}")
+
+        # 如果解析到了新格式，使用结构化分析；否则使用原始内容
+        if analysis_parts:
+            analysis = "\n\n".join(analysis_parts)
+        else:
+            analysis = content.strip()
+
+        # 兼容旧字段：从新格式推断，保持向后兼容
+        # 优先尝试从旧格式中提取
         missing_match = re.search(
             r'缺失信息[：:]\s*(.+?)(?=重要信息识别|$)', content, re.DOTALL
         )
-        missing_info = missing_match.group(1).strip() if missing_match else None
-
-        # 提取重要信息识别
         important_match = re.search(
             r'重要信息识别[：:]\s*(.+)', content, re.DOTALL
         )
-        important_info = important_match.group(1).strip() if important_match else None
+
+        # 如果旧格式不存在，从新格式推断
+        if missing_match:
+            missing_info = missing_match.group(1).strip()
+        else:
+            # 从完整性分析推断缺失信息
+            missing_info = completeness_analysis
+
+        if important_match:
+            important_info = important_match.group(1).strip()
+        else:
+            # 从召回质量评估推断重要信息识别
+            important_info = retrieval_quality
 
         # 判断2级分类
         is_correct = category == "fully_correct"
@@ -192,7 +267,14 @@ class LLMComparator:
             category=category,
             analysis=analysis,
             missing_info=missing_info,
-            important_info=important_info
+            important_info=important_info,
+            # 新增字段
+            retrieval_quality=retrieval_quality,
+            basis_analysis=basis_analysis,
+            accuracy_analysis=accuracy_analysis,
+            completeness_analysis=completeness_analysis,
+            version_analysis=version_analysis,
+            overall_judgment=overall_judgment
         )
 
     async def evaluate(self, question: str, expected: str, actual: str) -> LLMEvalResult:

@@ -1072,7 +1072,7 @@ class WorkflowBatchProcessor:
                         scope=scope,
                         ref_answer=ref_answer,
                         history_eval=history_eval,
-                        improvement_analysis=eval_result.analysis,  # 暂时使用同一字段
+                        improvement_analysis=eval_result.version_analysis,  # 版本对比分析
                         # 新增字段：RAG响应解析结果
                         extracted_question=extracted_question,
                         rerank_sources=rerank_sources,

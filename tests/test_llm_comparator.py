@@ -98,12 +98,13 @@ class TestLLMComparator:
         assert result.category == "completely_wrong"  # 默认值
 
     def test_parse_llm_response_missing_fields(self):
-        """测试解析缺少字段的响应"""
+        """测试解析缺少字段的响应（无法解析新格式时返回原始内容）"""
         content = "分析：只有分析内容"
 
         result = LLMComparator._parse_llm_response(content)
         assert result.category == "completely_wrong"  # 默认值
-        assert result.analysis == "只有分析内容"
+        # 新解析逻辑：无法匹配新格式时返回原始内容
+        assert result.analysis == "分析：只有分析内容"
         assert result.missing_info is None
 
     def test_judgment_mode_selection(self, detailed_config, autonomous_config):

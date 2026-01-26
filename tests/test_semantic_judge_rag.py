@@ -68,13 +68,14 @@ class TestSemanticJudgeRAGEval:
         assert "资料来源 [2]" in prompt
         assert question in prompt
         assert actual_answer in prompt
-        assert "事实基础优先" in prompt
-        assert "瞎编 vs 遗漏判断" in prompt
+        assert "评测决策框架" in prompt
 
         # 验证引导性分析要求
-        assert "是否基于召回文档片段" in prompt
-        assert "是否存在瞎编内容" in prompt
-        assert "参考了哪些资料编号" in prompt
+        assert "召回质量评估" in prompt
+        assert "基于性判断" in prompt
+        assert "准确性判断" in prompt
+        assert "完整性判断" in prompt
+        assert "4级分类标准" in prompt
 
     def test_build_prompt_with_all_context(self, judge):
         """测试包含所有上下文的提示词构建"""
@@ -101,8 +102,8 @@ class TestSemanticJudgeRAGEval:
         assert "历史信息" in prompt
         assert "上一版回答" in prompt
         assert "历史评测记录" in prompt
-        assert "改进对比" in prompt
-        assert "相比上一版有什么改进或退化" in prompt
+        assert "版本对比" in prompt
+        assert "改进或退化" in prompt
 
     def test_build_prompt_without_rerank_sources(self, judge):
         """测试没有 rerank_sources 时的提示词"""
@@ -133,10 +134,10 @@ class TestSemanticJudgeRAGEval:
             history_eval=None
         )
 
-        # 应该有历史信息和改进对比
+        # 应该有历史信息和版本对比
         assert "历史信息" in prompt
         assert "上一版回答" in prompt
-        assert "改进对比" in prompt
+        assert "版本对比" in prompt
 
     def test_build_prompt_with_history_eval_only(self, judge):
         """测试只有历史评测（无上一版答案）"""
@@ -149,10 +150,10 @@ class TestSemanticJudgeRAGEval:
             history_eval="上一版评测记录"
         )
 
-        # 应该有历史信息和改进对比
+        # 应该有历史信息和版本对比
         assert "历史信息" in prompt
         assert "历史评测记录" in prompt
-        assert "改进对比" in prompt
+        assert "版本对比" in prompt
 
     @pytest.mark.asyncio
     async def test_evaluate_with_context_passes_rerank_sources(self, judge, mock_llm_comparator):
@@ -225,12 +226,15 @@ class TestSemanticJudgeRAGEval:
             "召回文档片段",
             "评测范围",
             "历史信息",
-            "评测原则",
+            "评测决策框架",
             "4级分类标准",
             "输出格式",
-            "分析",
-            "缺失信息",
-            "重要信息识别"
+            "召回质量评估",
+            "基于性分析",
+            "准确性分析",
+            "完整性分析",
+            "版本对比分析",
+            "总体判断"
         ]
 
         for section in required_sections:
@@ -238,10 +242,11 @@ class TestSemanticJudgeRAGEval:
 
         # 验证引导性问题存在
         guidance_questions = [
-            "是否基于召回文档片段",
-            "参考了哪些资料编号",
-            "是否存在瞎编内容",
-            "相比上一版有什么改进或退化"
+            "召回质量评估",
+            "基于性判断",
+            "准确性判断",
+            "完整性判断",
+            "版本对比"
         ]
 
         for guidance in guidance_questions:
