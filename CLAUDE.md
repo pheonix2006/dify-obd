@@ -35,10 +35,11 @@
 
 ### 项目定位
 
-**OBD (Open Batch Processor)** 是一个 Dify 工作流批量处理工具，专注于：
+**OBD (Open Batch Processor)** 是一个 Dify 工作流批量处理和评测工具，专注于：
 
 - **批量 API 调用**：从 Excel 批量读取问题并调用 Dify API
-- **智能答案评测**：基于 LLM 的语义级答案质量评估
+- **RAG 综合评测**：基于召回文档片段的无标准答案评测
+- **答案质量评估**：基于 LLM 的语义级答案质量评估
 - **结果分析导出**：生成分类统计和详细分析报告
 
 ### 技术栈
@@ -114,7 +115,8 @@ obd/
 │       ├── comparator/              # 🎯 答案对比模块
 │       │   ├── __init__.py
 │       │   ├── answer_comparator.py  # 匹配算法（已废弃）
-│       │   └── llm_comparator.py     # LLM 语义评测器
+│       │   ├── llm_comparator.py     # LLM 基础评测器
+│       │   └── semantic_judge.py     # RAG 综合评测器
 │       └── processor/                # 📦 批处理模块
 │           ├── __init__.py
 │           └── batch_processor.py    # 批处理核心逻辑
@@ -125,7 +127,8 @@ obd/
 │   ├── test_client.py
 │   ├── test_comparator.py
 │   ├── test_llm_comparator.py
-│   ├── test_processor.py
+│   ├── test_semantic_judge_rag.py   # RAG 评测测试
+│   ├── test_batch_processor.py
 │   └── test_integration_llm.py
 │
 ├── config.ini                       # ⚙️ 配置文件 (gitignore)
@@ -496,28 +499,28 @@ search_for_pattern(
 
 ## 🎯 评测模式规范
 
-### 双层分类体系
+### 评测模式
 
-**2级分类（用于计算正确率）**:
-- **正确**: 重要信息全覆盖，可忽略非重要信息缺失
-- **错误**: 任何不符合正确标准的情况
+**两种评测方式**：
 
-**4级分类（用于详细分析）**:
-- **完全正确** (`fully_correct`): 重要信息全覆盖
-- **部分缺失** (`partial_missing`): 有少量重要信息缺失
-- **大量缺失** (`large_missing`): 很多信息（参数等）缺少
-- **完全错误** (`completely_wrong`): 完全错误/未回答
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **standard** | 有标准答案，对比评测 | 有正确答案的场景 |
+| **rag_eval** | 无标准答案，基于召回片段评测 | RAG 系统迭代优化 |
 
-### LLM 评测配置
+**RAG 综合评测特点**：
+- 以召回文档片段（20条）为唯一事实依据
+- 支持瞎编检测、引用追踪、版本对比
+- 通过提示词引导 LLM 输出分析内容（不强制格式）
+- 向后兼容，不破坏现有接口
 
-**判断模式**:
-- **detailed**: 详细标准模式，明确定义每种错误类型的判断标准
-- **autonomous**: 自主判断模式，让 LLM 智能判断
+**双层分类体系**：
+- **2级**：正确 / 错误（用于计算正确率）
+- **4级**：`fully_correct` / `partial_missing` / `large_missing` / `completely_wrong`
 
-**温度参数**:
-- **0.0**: 最确定，适合需要严格判断的场景
-- **0.3-0.7**: 平衡，适合需要一定灵活性的场景
-- **1.0**: 最随机，适合探索性场景（不推荐评测使用）
+**LLM 评测配置**：
+- **判断模式**：`detailed`（详细标准） / `autonomous`（自主判断）
+- **温度参数**：0.0（严格判断） / 0.3-0.7（平衡）
 
 ---
 
@@ -570,6 +573,7 @@ search_for_pattern(
 | v0.1.1 | 2025-12-29 | 完善TDD规范和类型系统要求 |
 | v0.2.0 | 2025-12-29 | 重构为概述性规范，增强可维护性 |
 | v0.3.0 | 2026-01-09 | 重新设计文档结构，明确文档定位和分工 |
+| v0.4.0 | 2026-01-24 | 新增 RAG 综合评测模块，简化规范描述 |
 
 ---
 

@@ -1,8 +1,12 @@
 """数据模型定义"""
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from enum import Enum
+
+# 类型注解导入（避免运行时循环引用）
+if TYPE_CHECKING:
+    from obd.comparator.llm_comparator import LLMEvalResult
 
 
 class AnswerCategory(Enum):
@@ -54,16 +58,54 @@ class RoutingConfig:
 
 
 @dataclass
+class ExecutionModeConfig:
+    """执行模式配置"""
+    mode: str = "standard"  # standard 或 rag_eval
+
+    def __post_init__(self):
+        """验证模式配置"""
+        valid_modes = ["standard", "rag_eval"]
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"无效的执行模式: {self.mode}\n"
+                f"支持的模式: {', '.join(valid_modes)}"
+            )
+
+
+@dataclass
+class StandardSchemaConfig:
+    """标准模式列配置"""
+    col_question: str = "Question"
+    col_ground_truth: str = "Ground Truth"
+    col_knowledge_base: Optional[str] = "KNOWLEDGE_BASE"
+    col_answer_state: Optional[str] = "ANSWER_STATE"
+    col_feedback_answer: Optional[str] = "FEEDBACK_ANSWER"
+
+
+@dataclass
+class RAGEvalSchemaConfig:
+    """RAG 评测模式列配置"""
+    col_question: str = "Question"
+    col_scope: str = "Scope"
+    col_ref_answer: str = "Ref_Answer"
+    col_history_eval: str = "Evaluation_Notes"
+
+
+@dataclass
 class LLMEvalConfig:
     """LLM评测配置"""
     enabled: bool = False
     api_key: Optional[str] = None
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = "https://api.openai.com/v1/chat/completions"  # 完整 URL，不自动拼接
     model: str = "gpt-4o"
     prompt_template: Optional[str] = None
     timeout: int = 30
     judgment_mode: str = "detailed"  # detailed/autonomous
     temperature: float = 0.0  # 控制输出的确定性
+    save_prompt: bool = False  # 是否在 Excel 中保存 LLM 提示词（调试用）
+    # 评测记录配置
+    eval_record_enabled: bool = False  # 是否启用评测记录（保存为 JSON 文件）
+    eval_record_path: str = "logs/eval_records"  # 评测记录保存路径
 
     def __post_init__(self):
         """验证配置项"""
@@ -102,6 +144,22 @@ class QuestionAnswer:
     llm_analysis: Optional[str] = None  # LLM 评测分析结果
     llm_category: Optional[str] = None  # LLM 4级分类结果
     missing_info: Optional[str] = None  # 缺失的具体内容
+    important_info: Optional[str] = None  # 重要信息识别
+
+    # RAG 评测模式字段（可选）
+    scope: Optional[str] = None          # 评测范围
+    ref_answer: Optional[str] = None     # 上一版回答
+    history_eval: Optional[str] = None   # 历史评价
+    improvement_analysis: Optional[str] = None  # 改进分析（新）
+
+    # RAG响应解析字段（新增）
+    extracted_question: Optional[str] = None  # 从answer中提取的问题
+    rerank_sources: Optional[str] = None  # rerank片段（合并）
+    llm_answer: Optional[str] = None  # LLM生成的答案（纯净版）
+    is_rag_format: bool = False  # 是否成功解析RAG格式
+
+    # LLM评测完整结果（包含prompt等调试信息）
+    llm_eval: Optional["LLMEvalResult"] = None
 
     @property
     def answer_category(self) -> Optional[AnswerCategory]:

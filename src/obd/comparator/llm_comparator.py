@@ -19,6 +19,8 @@ class LLMEvalResult:
     analysis: str  # 完整分析
     missing_info: Optional[str]  # 缺失信息
     important_info: Optional[str]  # 重要信息识别
+    prompt: Optional[str] = None  # LLM 评测提示词（调试用）
+    raw_response: Optional[str] = None  # LLM 原始响应（JSON 格式，用于调试分析）
 
 
 # 详细标准模式提示词
@@ -120,22 +122,51 @@ class LLMComparator:
         Returns:
             LLMEvalResult 对象
         """
-        # 提取分类
+        # 添加调试日志（限制日志长度）
+        logger.debug(f"LLM 原始响应: {content[:500]}...")
+
+        # 扩展分类映射，支持中英文
+        category_map = {
+            "完全正确": "fully_correct",
+            "部分缺失": "partial_missing",
+            "大量缺失": "large_missing",
+            "完全错误": "completely_wrong",
+            "fully_correct": "fully_correct",
+            "partial_missing": "partial_missing",
+            "large_missing": "large_missing",
+            "completely_wrong": "completely_wrong"
+        }
+
+        # 1. 尝试标准格式匹配（中文）
         category_match = re.search(r'分类[：:]\s*(\S+)', content)
+
+        # 2. 尝试宽松匹配（支持英文格式和更宽松的分隔符）
+        if not category_match:
+            category_match = re.search(
+                r'category[：:]\s*(fully_correct|partial_missing|large_missing|completely_wrong)',
+                content, re.IGNORECASE
+            )
+
         if category_match:
             category_str = category_match.group(1)
-            # 映射到枚举值
-            category_map = {
-                "完全正确": "fully_correct",
-                "部分缺失": "partial_missing",
-                "大量缺失": "large_missing",
-                "完全错误": "completely_wrong"
-            }
             category = category_map.get(category_str, "completely_wrong")
         else:
-            category = "completely_wrong"
+            # 3. 降级推断逻辑：基于关键词内容推断分类
+            content_lower = content.lower()
+            if "完全正确" in content or "fully correct" in content_lower:
+                category = "fully_correct"
+            elif "部分缺失" in content or "partial" in content_lower and "missing" in content_lower:
+                category = "partial_missing"
+            elif "大量缺失" in content or ("large" in content_lower and "missing" in content_lower):
+                category = "large_missing"
+            else:
+                category = "completely_wrong"
+                logger.warning(
+                    f"无法解析分类，使用默认值 completely_wrong。"
+                    f"响应预览: {content[:200]}..."
+                )
 
-        # 提取分析
+        # 提取分析部分
         analysis_match = re.search(
             r'分析[：:]\s*(.+?)(?=缺失信息|重要信息识别|$)', content, re.DOTALL
         )

@@ -6,13 +6,16 @@ import sys
 from pathlib import Path
 from typing import Dict
 import os
-from obd.models import WorkflowConfig, RoutingConfig, LLMEvalConfig
+from obd.models import (
+    WorkflowConfig, RoutingConfig, LLMEvalConfig,
+    ExecutionModeConfig, StandardSchemaConfig, RAGEvalSchemaConfig
+)
 from obd.processor.batch_processor import WorkflowBatchProcessor
 os.environ["NO_PROXY"] = "localhost,127.0.0.1" + ("," + os.environ.get("NO_PROXY", "")) if os.environ.get("NO_PROXY") else "localhost,127.0.0.1"
 
 def load_config(config_path: str = "config.ini") -> dict:
     """
-    加载配置文件（支持路由映射）
+    加载配置文件（支持路由映射和双模式）
 
     Args:
         config_path: 配置文件路径
@@ -36,14 +39,61 @@ def load_config(config_path: str = "config.ini") -> dict:
     if config.has_option("Workflow", "workflow_id"):
         workflow_id = config.get("Workflow", "workflow_id")
 
+    # ===== 新增：执行模式配置 =====
+    execution_mode = config.get("EXECUTION_MODE", "mode", fallback="standard")
+
+    # 标准模式列配置
+    standard_question_col = config.get(
+        "SCHEMA_STANDARD", "col_question", fallback="Question"
+    )
+    standard_ground_truth_col = config.get(
+        "SCHEMA_STANDARD", "col_ground_truth", fallback="Ground Truth"
+    )
+    standard_kb_col = config.get(
+        "SCHEMA_STANDARD", "col_knowledge_base", fallback=None
+    )
+    standard_state_col = config.get(
+        "SCHEMA_STANDARD", "col_answer_state", fallback=None
+    )
+    standard_feedback_col = config.get(
+        "SCHEMA_STANDARD", "col_feedback_answer", fallback=None
+    )
+
+    # RAG 评测模式列配置
+    rag_question_col = config.get(
+        "SCHEMA_RAG_EVAL", "col_question", fallback="Question"
+    )
+    rag_scope_col = config.get(
+        "SCHEMA_RAG_EVAL", "col_scope", fallback="Scope"
+    )
+    rag_ref_answer_col = config.get(
+        "SCHEMA_RAG_EVAL", "col_ref_answer", fallback="Ref_Answer"
+    )
+    rag_history_eval_col = config.get(
+        "SCHEMA_RAG_EVAL", "col_history_eval", fallback="Evaluation_Notes"
+    )
+
+    # 兼容旧配置：从 Excel 节读取（如果存在）
+    excel_path = None
+    question_column = "question"
+    answer_column = "answer"
+
+    if config.has_section("Excel"):
+        excel_path = config.get("Excel", "file_path", fallback=None)
+        question_column = config.get("Excel", "question_column", fallback="question")
+        answer_column = config.get("Excel", "answer_column", fallback="answer")
+    elif config.has_section("Output"):
+        # 使用新的配置节
+        excel_path = config.get("Output", "input_file_path", fallback=None)
+
     return {
         "api_key": config.get("Dify", "api_key"),
         "base_url": config.get("Dify", "base_url"),
         "response_mode": config.get("Dify", "response_mode"),
         "timeout": config.getint("Dify", "timeout"),
-        "excel_path": config.get("Excel", "file_path"),
-        "question_column": config.get("Excel", "question_column", fallback="question"),
-        "answer_column": config.get("Excel", "answer_column", fallback="answer"),
+        "excel_path": excel_path,
+        "question_column": question_column,
+        "answer_column": answer_column,
         "input_variable_name": config.get("Workflow", "input_variable_name", fallback="query"),
         "output_variable_name": config.get("Workflow", "output_variable_name", fallback="answer"),
         "comparison_method": config.get("Workflow", "comparison_method", fallback="auto"),
@@ -61,6 +111,24 @@ def load_config(config_path: str = "config.ini") -> dict:
             "prompt_template": config.get("LLM_EVAL", "prompt_template", fallback=None),
             "judgment_mode": config.get("LLM_EVAL", "judgment_mode", fallback="detailed"),
             "temperature": config.getfloat("LLM_EVAL", "temperature", fallback=0.0),
+            # 评测记录配置
+            "eval_record_enabled": config.getboolean("LLM_EVAL", "eval_record_enabled", fallback=False),
+            "eval_record_path": config.get("LLM_EVAL", "eval_record_path", fallback="logs/eval_records"),
+        },
+        # 新增：执行模式配置
+        "execution_mode": execution_mode,
+        "standard_schema": {
+            "col_question": standard_question_col,
+            "col_ground_truth": standard_ground_truth_col,
+            "col_knowledge_base": standard_kb_col,
+            "col_answer_state": standard_state_col,
+            "col_feedback_answer": standard_feedback_col,
+        },
+        "rag_eval_schema": {
+            "col_question": rag_question_col,
+            "col_scope": rag_scope_col,
+            "col_ref_answer": rag_ref_answer_col,
+            "col_history_eval": rag_history_eval_col,
         }
     }
 
@@ -93,22 +161,44 @@ async def main():
         knowledge_base_column=config_data.get("knowledge_base_column", "KNOWLEDGE_BASE"),
         answer_state_column=config_data.get("answer_state_column", "ANSWER_STATE"),
         feedback_answer_column=config_data.get("feedback_answer_column", "FEEDBACK_ANSWER"),
-        problem_value_column=config_data["question_column"],
-        answer_value_column=config_data["answer_column"]
+        problem_value_column=config_data.get("question_column", "question"),
+        answer_value_column=config_data.get("answer_column", "answer")
     )
 
     # 创建 LLM 评测配置
     llm_eval_config = LLMEvalConfig(**config_data["llm_eval"])
 
-    # 创建批处理器
+    # 新增：创建执行模式配置
+    execution_mode_config = ExecutionModeConfig(mode=config_data["execution_mode"])
+
+    standard_schema_config = StandardSchemaConfig(
+        col_question=config_data["standard_schema"]["col_question"],
+        col_ground_truth=config_data["standard_schema"]["col_ground_truth"],
+        col_knowledge_base=config_data["standard_schema"]["col_knowledge_base"],
+        col_answer_state=config_data["standard_schema"]["col_answer_state"],
+        col_feedback_answer=config_data["standard_schema"]["col_feedback_answer"]
+    )
+
+    rag_eval_schema_config = RAGEvalSchemaConfig(
+        col_question=config_data["rag_eval_schema"]["col_question"],
+        col_scope=config_data["rag_eval_schema"]["col_scope"],
+        col_ref_answer=config_data["rag_eval_schema"]["col_ref_answer"],
+        col_history_eval=config_data["rag_eval_schema"]["col_history_eval"]
+    )
+
+    # 创建批处理器（传入新的配置对象）
     processor = WorkflowBatchProcessor(
-        workflow_config, 
-        routing_config, 
-        llm_eval_config=llm_eval_config
+        workflow_config,
+        routing_config,
+        llm_eval_config=llm_eval_config,
+        execution_mode_config=execution_mode_config,
+        standard_schema_config=standard_schema_config,
+        rag_eval_schema_config=rag_eval_schema_config
     )
 
     try:
         print(f"Excel文件: {config_data['excel_path']}")
+        print(f"执行模式: {execution_mode_config.mode}")
         print(f"对比方法: {config_data['comparison_method']}")
         print(f"并发数量: {config_data['max_workers']}")
         if llm_eval_config.enabled:
@@ -120,7 +210,7 @@ async def main():
         print()
         print("-" * 60)
 
-        # 处理Excel
+        # 处理Excel（内部根据模式选择逻辑）
         results = await processor.process_excel(
             excel_path=config_data["excel_path"],
             output_path=config_data["output_path"],

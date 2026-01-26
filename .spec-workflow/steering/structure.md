@@ -35,23 +35,29 @@ obd/
 │       ├── __init__.py         # 包初始化，导出公共 API
 │       ├── main.py            # 程序入口（CLI 接口）
 │       ├── models.py          # 数据模型定义
+│       ├── debug_api.py       # API 调试工具
 │       ├── client/           # API 客户端模块
 │       │   ├── __init__.py
 │       │   └── dify_client.py  # Dify API 封装
 │       ├── comparator/        # 答案对比模块
 │       │   ├── __init__.py
-│       │   └── answer_comparator.py  # 匹配算法实现
+│       │   ├── answer_comparator.py  # 字符匹配对比器（已废弃）
+│       │   └── llm_comparator.py     # LLM 语义评测器
 │       └── processor/        # 批处理模块
 │           ├── __init__.py
-│           └── batch_processor.py  # 核心批处理逻辑
+│           ├── batch_processor.py  # 核心批处理逻辑
+│           ├── evaluation.py       # 评测相关功能
+│           └── routing.py          # 路由相关功能
 │
 ├── tests/                  # 测试目录（与 src 平级）
 │   ├── __init__.py
 │   ├── conftest.py         # pytest fixtures
 │   ├── test_models.py       # 模型测试
-│   ├── test_dify_client.py # 客户端测试
-│   ├── test_answer_comparator.py  # 对比器测试
-│   └── test_batch_processor.py   # 处理器测试
+│   ├── test_client.py       # 客户端测试
+│   ├── test_comparator.py   # 对比器测试
+│   ├── test_llm_comparator.py  # LLM 评测器测试
+│   ├── test_processor.py    # 处理器测试
+│   └── test_integration_llm.py  # LLM 集成测试
 │
 ├── scripts/               # 工具脚本目录
 │   └── rerank_test.py    # Rerank 测试脚本（实验性）
@@ -183,26 +189,6 @@ obd/
 3. **本地模块导入** (e.g., `from .models import WorkflowConfig`)
 4. **类型导入** (e.g., `from typing import Dict, List, Optional`)
 
-**标准格式示例**:
-```python
-# 1. 标准库
-import os
-import time
-from typing import Dict, List, Optional, Tuple
-
-# 2. 第三方库
-import requests
-import pandas as pd
-from difflib import SequenceMatcher
-
-# 3. 本地模块
-from .models import WorkflowConfig, QuestionAnswer
-from .client.dify_client import DifyWorkflowClient
-
-# 4. 类型导入（如需额外类型）
-from typing import Protocol, TypeAlias
-```
-
 **分组规范**:
 - 使用空行分隔不同组的导入
 - 同组内的导入按字母顺序排列
@@ -212,23 +198,12 @@ from typing import Protocol, TypeAlias
 
 #### 绝对导入 vs 相对导入
 
-**包内导入**: 使用相对导入
-```python
-# 在 src/obd/processor/batch_processor.py 中
-from .models import WorkflowConfig, QuestionAnswer
-from .client.dify_client import DifyWorkflowClient
-```
-
-**包外导入**: 使用绝对导入
-```python
-# 在测试文件 tests/test_batch_processor.py 中
-from obd.models import WorkflowConfig, QuestionAnswer
-from obd.client.dify_client import DifyWorkflowClient
-```
+**包内导入**: 使用相对导入（`from .xxx import yyy`）
+**包外导入**: 使用绝对导入（`from obd.xxx import yyy`）
 
 **原则**:
-- src/ 内部使用相对导入（`from .xxx import yyy`）
-- tests/ 使用绝对导入（`from obd.xxx import yyy`）
+- src/ 内部使用相对导入
+- tests/ 使用绝对导入
 - 避免使用 `import obd.xxx.yyy as z` 的长路径导入
 
 #### 依赖管理
@@ -238,108 +213,32 @@ from obd.client.dify_client import DifyWorkflowClient
 - **版本锁定**: 使用精确版本（如 `requests==2.31.0`）
 - **开发依赖**: 在 `pyproject.toml` 的 `[project.optional-dependencies]` 中声明
 
-```toml
-# pyproject.toml 示例
-[project]
-dependencies = [
-    "requests>=2.31.0",
-    "pandas>=2.0.0",
-    "openpyxl>=3.1.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-mock>=3.10.0",
-]
-```
-
 ## Code Structure Patterns
 
 ### Module/Class Organization
 
 每个 Python 文件遵循以下结构：
 
-```python
-# 1. 导入语句（标准库 → 第三方 → 本地）
-import os
-from typing import Dict, Optional
-import requests
-from .models import WorkflowConfig
-
-# 2. 常量和配置
-DEFAULT_TIMEOUT = 60
-API_VERSION = "v1"
-MAX_RETRIES = 3
-
-# 3. 类型定义（如需要）
-from typing import Protocol
-
-class SomeProtocol(Protocol):
-    def process(self) -> None: ...
-
-# 4. 类/函数定义（公共 API 在前）
-class MyClass:
-    """类文档字符串（Google/NumPy 风格）"""
-
-    def __init__(self, config: WorkflowConfig):
-        """构造函数文档"""
-        self.config = config
-
-    def public_method(self, param: str) -> Dict:
-        """公共方法文档"""
-        # 实现代码
-        pass
-
-# 5. 辅助函数（内部使用，私有）
-def _helper_function(value: str) -> bool:
-    """内部辅助函数文档"""
-    # 实现代码
-    pass
-
-# 6. 公共 API 导出（可选）
-__all__ = ["MyClass", "public_function"]
-```
+1. **导入语句**（标准库 → 第三方 → 本地）
+2. **常量和配置**
+3. **类型定义**（如需要）
+4. **类/函数定义**（公共 API 在前）
+5. **辅助函数**（内部使用，私有）
+6. **公共 API 导出**（可选）
 
 ### Function/Method Organization
 
-每个函数遵循以下模式：
+每个函数包含以下部分：
 
-```python
-def function_name(param1: Type, param2: Type) -> ReturnType:
-    """函数文档字符串（Google/NumPy 风格）
+1. **文档字符串**（Google/NumPy 风格）
+   - Args: 参数说明
+   - Returns: 返回值说明
+   - Raises: 异常说明
+   - Example: 使用示例（可选）
 
-    Args:
-        param1: 参数 1 的说明
-        param2: 参数 2 的说明
-
-    Returns:
-        返回值的类型和说明
-
-    Raises:
-        ValueError: 参数验证失败时抛出
-        APIError: API 调用失败时抛出
-
-    Example:
-        >>> result = function_name("test", 123)
-        >>> print(result)
-        {"status": "success", "data": ...}
-    """
-    # 1. 参数验证
-    if not param1:
-        raise ValueError("param1 不能为空")
-
-    if param2 < 0:
-        raise ValueError("param2 必须为正数")
-
-    # 2. 核心逻辑
-    intermediate = _process_step1(param1, param2)
-    result = _process_step2(intermediate)
-
-    # 3. 返回结果
-    return result
-```
+2. **参数验证**（函数开头）
+3. **核心逻辑**（中间部分）
+4. **返回结果**（明确的返回点）
 
 **要点**:
 - 参数验证在函数开头
@@ -373,33 +272,12 @@ def function_name(param1: Type, param2: Type) -> ReturnType:
 每个文件/类只有一个明确的职责：
 
 - **`dify_client.py`**: 仅负责 Dify API 调用
-- **`answer_comparator.py`**: 仅负责答案对比
+- **`llm_comparator.py`**: 仅负责 LLM 语义评测
 - **`batch_processor.py`**: 仅负责批处理编排
 
-**违反示例**:
-```python
-# ❌ 错误：混合多个职责
-class Processor:
-    def call_api(self): ...      # API 调用
-    def compare_answers(self): ...  # 答案对比
-    def write_excel(self): ...    # Excel 写入
-```
-
-**正确示例**:
-```python
-# ✅ 正确：分离职责
-# dify_client.py
-class DifyWorkflowClient:
-    def execute_workflow(self): ...
-
-# answer_comparator.py
-class AnswerComparator:
-    def compare(self): ...
-
-# batch_processor.py
-class WorkflowBatchProcessor:
-    def process_excel(self): ...
-```
+**原则**:
+- 一个类不应混合多个职责（如 API 调用、答案对比、Excel 写入）
+- 职责分离提高代码可维护性
 
 ### 2. Modularity (模块化)
 
@@ -418,20 +296,8 @@ class WorkflowBatchProcessor:
 
 结构设计便于测试：
 
-- **依赖注入支持**: `WorkflowBatchProcessor` 接受可选的 `client` 参数
-  ```python
-  def __init__(self, config: WorkflowConfig, client=None):
-      self.client = client or DifyWorkflowClient(config)
-  ```
-
+- **依赖注入支持**: 类接受可选的依赖参数
 - **Mock 友好的接口**: 所有外部依赖（如 API 调用）易于 mock
-  ```python
-  # tests/test_batch_processor.py
-  def test_process_excel(self):
-      mock_client = Mock(spec=DifyWorkflowClient)
-      processor = WorkflowBatchProcessor(config, client=mock_client)
-      # 测试逻辑...
-  ```
 
 ### 4. Consistency (一致性)
 
@@ -489,19 +355,6 @@ class WorkflowBatchProcessor:
 - **实现细节**: 使用 `_` 前缀标记为私有
 - **边界**: 外部代码仅依赖公共接口
 
-**示例**:
-```python
-# src/obd/__init__.py
-from .models import WorkflowConfig, QuestionAnswer
-from .processor.batch_processor import WorkflowBatchProcessor
-
-__all__ = [
-    "WorkflowConfig",
-    "QuestionAnswer",
-    "WorkflowBatchProcessor",
-]
-```
-
 #### Stable vs Experimental
 - **生产代码**: `src/obd/` 下的所有模块
 - **实验功能**: `scripts/` 下的脚本（如 `rerank_test.py`）
@@ -536,50 +389,10 @@ __all__ = [
 - **测量方法**: 使用 `wc -l filename` 或 IDE 统计
 - **违规处理**: 拆分为多个小文件
 
-**过大文件示例**:
-```python
-# ❌ 错误：450 行
-class WorkflowBatchProcessor:
-    # ... 450 lines of code ...
-```
-
-**重构方案**:
-```python
-# ✅ 正确：拆分为多个文件
-# workflow_processor.py (主类，200 行）
-# workflow_validator.py (验证逻辑，100 行）
-# workflow_exporter.py (导出逻辑，100 行）
-```
-
 #### Function Size
 - **限制**: 每个函数不超过 60 行
 - **测量方法**: IDE 统计或手动计数
 - **违规处理**: 提取子函数
-
-**过长函数示例**:
-```python
-# ❌ 错误：75 行
-def process_excel(self, excel_path: str) -> List[QuestionAnswer]:
-    # ... 75 lines of code ...
-```
-
-**重构方案**:
-```python
-# ✅ 正确：拆分为多个函数
-def process_excel(self, excel_path: str) -> List[QuestionAnswer]:
-    """主处理函数（30 行）"""
-    df = self._load_excel(excel_path)
-    results = self._process_rows(df)
-    return results
-
-def _load_excel(self, excel_path: str) -> pd.DataFrame:
-    """加载 Excel（15 行）"""
-    # ...
-
-def _process_rows(self, df: pd.DataFrame) -> List[QuestionAnswer]:
-    """处理行（20 行）"""
-    # ...
-```
 
 #### Method Size
 - **限制**: 每个方法不超过 50 行
@@ -594,68 +407,10 @@ def _process_rows(self, df: pd.DataFrame) -> List[QuestionAnswer]:
   - 提前返回（guard clauses）
   - 使用策略模式替换复杂 if/else
 
-**高复杂度示例**:
-```python
-# ❌ 错误：复杂度 15
-def complex_function(self):
-    if condition1:
-        if condition2:
-            if condition3:
-                if condition4:
-                    if condition5:
-                        # ...
-```
-
-**简化方案**:
-```python
-# ✅ 正确：使用 guard clauses
-def simplified_function(self):
-    # Guard clauses: 提前返回
-    if not condition1:
-        return default_value
-
-    if not condition2:
-        return default_value
-
-    # 简化逻辑
-    result = self._calculate_core()
-
-    return result
-```
-
 #### Nesting Depth
 - **限制**: 最大嵌套 4 层
 - **测量方法**: IDE 缩进可视化
 - **违规处理**: 提取函数或使用 guard clauses
-
-**深层嵌套示例**:
-```python
-# ❌ 错误：5 层嵌套
-def deep_nesting():
-    if condition1:
-        if condition2:
-            if condition3:
-                if condition4:
-                    if condition5:  # 第 5 层
-                        do_something()
-```
-
-**重构方案**:
-```python
-# ✅ 正确：提前返回
-def flat_nesting():
-    if not condition1:
-        return
-
-    if not condition2:
-        return
-
-    if not condition3:
-        return
-
-    # 简化逻辑
-    do_something()
-```
 
 ## Documentation Standards
 
@@ -666,62 +421,13 @@ def flat_nesting():
 - **位置**: 函数/类定义的下一行
 - **内容**: Args, Returns, Raises, Example
 
-**示例**:
-```python
-def execute_workflow(
-    self,
-    inputs: Dict,
-    user: str,
-    workflow_id: Optional[str] = None
-) -> Dict:
-    """执行 Dify 工作流
-
-    Args:
-        inputs: 工作流输入参数（键值对）
-        user: 用户标识符
-        workflow_id: 可选的工作流 ID
-
-    Returns:
-        包含工作流执行结果的字典
-
-    Raises:
-        APIError: API 调用失败时抛出
-        TimeoutError: 请求超时时抛出
-
-    Example:
-        >>> client = DifyWorkflowClient(config)
-        >>> result = client.execute_workflow({"query": "test"}, "user123")
-        >>> print(result["answer"])
-        "Test response"
-    """
-    # 实现代码...
-```
-
 #### 私有方法
 - **可选**: 建议添加简短说明
 - **内容**: 仅描述用途和关键参数
 
-**示例**:
-```python
-def _validate_config(self, config: WorkflowConfig) -> bool:
-    """验证配置是否有效"""
-    if not config.api_key:
-        raise ValueError("API 密钥不能为空")
-    return True
-```
-
 #### 复杂逻辑
 - **必须添加**: 行内注释说明算法或业务规则
 - **位置**: 关键步骤上方
-
-**示例**:
-```python
-def fuzzy_match(self, answer1: str, answer2: str) -> bool:
-    # 使用 SequenceMatcher 计算相似度，阈值 0.8
-    matcher = SequenceMatcher(None, answer1.lower(), answer2.lower())
-    ratio = matcher.ratio()
-    return ratio >= 0.8
-```
 
 ### README 要求
 
@@ -734,38 +440,6 @@ def fuzzy_match(self, answer1: str, answer2: str) -> bool:
   - 使用示例
   - 配置说明
 
-**示例结构**:
-```markdown
-# Client Module
-
-## Overview
-Dify API 客户端封装，提供简单的工作流调用接口。
-
-## API
-
-### DifyWorkflowClient
-
-#### execute_workflow(inputs, user, workflow_id=None)
-执行 Dify 工作流。
-
-**参数**:
-- `inputs` (Dict): 工作流输入
-- `user` (str): 用户标识
-- `workflow_id` (Optional[str]): 工作流 ID
-
-**返回**: Dict - 工作流执行结果
-
-**示例**:
-```python
-from obd.client.dify_client import DifyWorkflowClient
-from obd.models import WorkflowConfig
-
-config = WorkflowConfig(api_key="xxx")
-client = DifyWorkflowClient(config)
-result = client.execute_workflow({"query": "test"}, "user123")
-```
-```
-
 #### 复杂算法文档
 - **需要时**: 复杂算法应有详细说明文档
 - **位置**: `.spec/` 或 `.spec-workflow/specs/` 中
@@ -774,23 +448,6 @@ result = client.execute_workflow({"query": "test"}, "user123")
   - 时间复杂度
   - 空间复杂度
   - 示例
-
-**示例** (fuzzy match 算法）:
-```markdown
-## Fuzzy Match Algorithm
-
-### 原理
-使用 difflib.SequenceMatcher 计算两个字符串的相似度。
-
-### 算法
-1. 将字符串转换为小写
-2. 使用 SequenceMatcher 计算相似度比
-3. 比较相似度与阈值（0.8）
-
-### 复杂度
-- 时间复杂度: O(n*m), n 和 m 为字符串长度
-- 空间复杂度: O(n+m)
-```
 
 #### API 变更
 - **要求**: API 变更需更新对应文档

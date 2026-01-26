@@ -65,18 +65,6 @@ workflow:
     edges:
     - data:
         isInLoop: false
-        sourceType: code
-        targetType: http-request
-      id: 1767076701345-source-1767061470912-target
-      selected: false
-      source: '1767076701345'
-      sourceHandle: source
-      target: '1767061470912'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInLoop: false
         sourceType: http-request
         targetType: code
       id: 1767061470912-source-1767080753260-target
@@ -116,6 +104,7 @@ workflow:
         sourceType: start
         targetType: http-request
       id: 1766990052285-source-17685332783840-target
+      selected: false
       source: '1766990052285'
       sourceHandle: source
       target: '17685332783840'
@@ -125,11 +114,12 @@ workflow:
     - data:
         isInLoop: false
         sourceType: http-request
-        targetType: code
-      id: 17685332783840-source-1767076701345-target
+        targetType: http-request
+      id: 17685332783840-source-1767061470912-target
+      selected: false
       source: '17685332783840'
       sourceHandle: source
-      target: '1767076701345'
+      target: '1767061470912'
       targetHandle: target
       type: custom
       zIndex: 0
@@ -157,13 +147,9 @@ workflow:
 
           {{#sys.query#}}
 
-          召回的片段是：
-
-          {{#1767076701345.pure_documents#}}
-
           rerank后的片段是：
 
-          {{#1767080753260.final_context_text#}}
+          {{#1767080753260.formatted_result#}}
 
           经过llm的结果：
 
@@ -172,7 +158,7 @@ workflow:
         title: 直接回复
         type: answer
         variables: []
-      height: 191
+      height: 156
       id: answer
       position:
         x: -559.3076633845687
@@ -195,7 +181,8 @@ workflow:
             key: ''
             type: text
             value: "{\n    \"model\": \"bge-reranker-v2-m3\",\n    \"query\": \"{{#sys.query#}}\"\
-              , \n    \"documents\": {{#1767076701345.pure_documents#}}\n}"
+              , \n    \"documents\": {{#17685332783840.body#}},\n    \"top_k\": 5,\n\
+              \     \"score_threshold\":0\n}"
           type: json
         headers: ''
         method: post
@@ -212,101 +199,31 @@ workflow:
           max_write_timeout: 0
         title: HTTP 请求
         type: http-request
-        url: http://host.docker.internal:9997/v1/rerank
+        url: http://host.docker.internal:8000/rerank
         variables: []
       height: 136
       id: '1767061470912'
       position:
-        x: -226.53253130997984
-        y: 71.00617370940901
+        x: -217.63129534231055
+        y: 74.17072291415082
       positionAbsolute:
-        x: -226.53253130997984
-        y: 71.00617370940901
+        x: -217.63129534231055
+        y: 74.17072291415082
       selected: false
       sourcePosition: right
       targetPosition: left
       type: custom
       width: 241
     - data:
-        code: "import json\n\ndef main(body_str: str) -> dict:\n    \"\"\"\n    处理\
-          \ String 格式的 body 输入，并提取结果列表。\n    \n    Args:\n        body_str (str):\
-          \ 序列化的 JSON 字符串\n    \"\"\"\n    try:\n        # 核心逻辑：将 String 还原为 Python\
-          \ 字典\n        # 此时 body_data 会变成 {'results': [...], 'latency_ms': ...}\n\
-          \        body_data = json.loads(body_str)\n        \n        # 提取 results\
-          \ 列表，并确保其为 Array[String] 格式\n        pure_documents = body_data.get('results',\
-          \ [])\n        \n        # 严谨性校验：确保 pure_documents 确实是列表\n        if not\
-          \ isinstance(pure_documents, list):\n            pure_documents = []\n \
-          \           \n    except (json.JSONDecodeError, TypeError):\n        # 如果\
-          \ body_str 不是合法的 JSON 格式，返回空列表\n        pure_documents = []\n\n    return\
-          \ {\n        \"pure_documents\": pure_documents\n    }"
+        code: "import json\n\ndef main(rerank_output_body: str) -> dict:\n    # \U0001F3AF\
+          \ 核心转换逻辑：仅提取 formatted_result 字段\n    data = json.loads(rerank_output_body)\n\
+          \    formatted_result = data.get(\"formatted_result\", \"\")\n    \n   \
+          \ return {\n        \"formatted_result\": formatted_result\n    }"
         code_language: python3
         outputs:
-          pure_documents:
-            children: null
-            type: array[string]
-        retry_config:
-          max_retries: 3
-          retry_enabled: false
-          retry_interval: 1000
-        selected: false
-        title: 代码执行
-        type: code
-        variables:
-        - value_selector:
-          - '17685332783840'
-          - body
-          value_type: string
-          variable: body_str
-      height: 51
-      id: '1767076701345'
-      position:
-        x: -564.5272230216772
-        y: 52.21971136414946
-      positionAbsolute:
-        x: -564.5272230216772
-        y: 52.21971136414946
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 241
-    - data:
-        code: "import json\n\ndef main(rerank_output_body: str, original_knowledge:\
-          \ list) -> dict:\n    # 1. 解析 Rerank 结果 (保持变量名不变)\n    data = json.loads(rerank_output_body)\n\
-          \    rerank_items = data.get('results', [])\n    \n    # 2. 设定过滤参数\n   \
-          \ TOP_K = 5            \n    THRESHOLD = 0     \n    \n    final_docs =\
-          \ []\n    \n    # 3. 按照分数筛选并找回原文字内容\n    # 仅处理 Top_K 数量\n    for item in\
-          \ rerank_items[:10]: # 先取前10条进行筛选\n        score = item['relevance_score']\n\
-          \        idx = item['index']\n        \n        # 满足阈值且未超过 TOP_K 限制\n  \
-          \      if score >= THRESHOLD and len(final_docs) < TOP_K:\n            #\
-          \ 安全获取原始数据\n            if idx < len(original_knowledge):\n            \
-          \    doc = original_knowledge[idx]\n                \n                #\
-          \ \U0001F6E0️ 核心修复：检查 doc 是否为字典\n                if isinstance(doc, dict):\n\
-          \                    # 如果是字典，可以安全赋值\n                    doc['rerank_score']\
-          \ = round(score, 4)\n                    final_docs.append(doc)\n      \
-          \          else:\n                    # 如果是字符串，手动包装成字典以保持后续兼容\n        \
-          \            final_docs.append({\n                        \"content\": str(doc),\n\
-          \                        \"rerank_score\": round(score, 4),\n          \
-          \              \"title\": \"参考分段\"\n                    })\n           \
-          \ \n    # 4. 格式化输出文本 (保持变量名不变)\n    context_text = \"\"\n    for i, d in\
-          \ enumerate(final_docs, 1):\n        # 提取标题，如果不存在则设为“未知”\n        title\
-          \ = d.get('title') or d.get('metadata', {}).get('document_name', '参考资料')\n\
-          \        context_text += f\"资料来源 [{i}] ({title}):\\n{d.get('content')}\\\
-          n\\n\"\n        \n    return {\n        \"final_context_text\": context_text,\
-          \ # 最终提供给 LLM 的变量\n        \"relevant_count\": len(final_docs),\n      \
-          \  \"top_score\": final_docs[0]['rerank_score'] if final_docs else 0\n \
-          \   }"
-        code_language: python3
-        outputs:
-          final_context_text:
+          formatted_result:
             children: null
             type: string
-          relevant_count:
-            children: null
-            type: number
-          top_score:
-            children: null
-            type: number
         selected: false
         title: 代码执行 2
         type: code
@@ -316,11 +233,6 @@ workflow:
           - body
           value_type: string
           variable: rerank_output_body
-        - value_selector:
-          - '1767076701345'
-          - pure_documents
-          value_type: array[string]
-          variable: original_knowledge
       height: 51
       id: '1767080753260'
       position:
@@ -353,7 +265,7 @@ workflow:
 
             <context>/
 
-            {{#1767080753260.final_context_text#}}
+            {{#1767080753260.formatted_result#}}
 
             </context>
 
@@ -375,11 +287,11 @@ workflow:
       height: 87
       id: '1767948011302'
       position:
-        x: -207.19217606809335
-        y: 262.01268804400536
+        x: -217.63129534231055
+        y: 257.8370403343185
       positionAbsolute:
-        x: -207.19217606809335
-        y: 262.01268804400536
+        x: -217.63129534231055
+        y: 257.8370403343185
       selected: true
       sourcePosition: right
       targetPosition: left
@@ -396,11 +308,15 @@ workflow:
             type: text
             value: '{
 
+                      "model":bge-reranker-v2-m3 ,
+
                       "query": "{{#sys.query#}}",
+
+                      "strategy": "global"
 
                       "top_k": 5,
 
-                      "strategy": "global"
+              "score_threshold":0
 
               }'
           type: json
@@ -424,18 +340,18 @@ workflow:
       height: 136
       id: '17685332783840'
       position:
-        x: -234.53706981040241
-        y: -128.15717838245496
+        x: -241.84445330235445
+        y: -96.94053810380362
       positionAbsolute:
-        x: -234.53706981040241
-        y: -128.15717838245496
+        x: -241.84445330235445
+        y: -96.94053810380362
       selected: false
       sourcePosition: right
       targetPosition: left
       type: custom
       width: 241
     viewport:
-      x: 1019.8493147820884
-      y: 196.8497897207621
-      zoom: 0.9579352182226964
+      x: 662.8871291347076
+      y: 349.6478828636189
+      zoom: 0.6320015492264034
   rag_pipeline_variables: []

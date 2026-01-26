@@ -289,3 +289,196 @@ class TestWorkflowBatchProcessor:
         # 应该抛出ValueError
         with pytest.raises(ValueError, match="Excel文件中不存在列: question"):
             processor.process_excel("dummy_path.xlsx")
+
+    @pytest.mark.asyncio
+    async def test_rag_eval_concurrent_control(self, sample_config):
+        """测试 RAG 评测模式的并发控制是否生效"""
+        import asyncio
+        from unittest.mock import patch, Mock
+        from obd.models import RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, StandardSchemaConfig, ExecutionModeConfig
+
+        # 创建 RAG schema 配置
+        rag_schema = RAGEvalSchemaConfig(
+            col_question='question',
+            col_scope='scope',
+            col_ref_answer='ref_answer',
+            col_history_eval='history_eval'
+        )
+
+        # 创建配置，设置 max_workers=2 来测试并发控制
+        from obd.models import WorkflowConfig
+        config_with_workers = WorkflowConfig(
+            api_key=sample_config.api_key,
+            base_url=sample_config.base_url,
+            timeout=sample_config.timeout,
+            max_workers=2,  # 设置为2以测试并发控制
+            response_mode=sample_config.response_mode,
+            input_variable_name=sample_config.input_variable_name,
+            output_variable_name=sample_config.output_variable_name,
+            workflow_mapping=sample_config.workflow_mapping
+        )
+
+        # 创建完整的配置
+        processor = WorkflowBatchProcessor(
+            config_with_workers,  # 使用修改后的配置
+            routing_config=RoutingConfig(),
+            llm_eval_config=LLMEvalConfig(
+                enabled=True,
+                api_key="test",
+                base_url="https://test.com",
+                model="gpt-4",
+                judgment_mode="detailed",
+                temperature=0.0
+            ),
+            execution_mode_config=ExecutionModeConfig(mode="rag_eval"),
+            standard_schema_config=StandardSchemaConfig(
+                col_question="question",
+                col_ground_truth="answer",
+                col_knowledge_base="kb",
+                col_answer_state="state",
+                col_feedback_answer="feedback"
+            ),
+            rag_eval_schema_config=rag_schema
+        )
+
+        # 创建 semantic_judge 的 mock
+        mock_semantic_judge = Mock()
+        processor.semantic_judge = mock_semantic_judge
+
+        # 创建测试数据（5行，超过默认的 max_workers=5）
+        test_df = pd.DataFrame({
+            'question': ['q1', 'q2', 'q3', 'q4', 'q5'],
+            'scope': ['', '', '', '', ''],
+            'ref_answer': ['a1', 'a2', 'a3', 'a4', 'a5'],
+            'history_eval': ['', '', '', '', '']
+        })
+
+        # 记录并发数
+        max_concurrent = 0
+        current_concurrent = 0
+        lock = asyncio.Lock()
+
+        # 创建带并发跟踪的 mock 方法
+        async def tracked_api_call(*args, **kwargs):
+            nonlocal max_concurrent, current_concurrent
+            async with lock:
+                current_concurrent += 1
+                if current_concurrent > max_concurrent:
+                    max_concurrent = current_concurrent
+            await asyncio.sleep(0.2)  # 模拟耗时操作
+            async with lock:
+                current_concurrent -= 1
+            return "mocked_answer"
+
+        async def tracked_eval(*args, **kwargs):
+            nonlocal max_concurrent, current_concurrent
+            async with lock:
+                current_concurrent += 1
+                if current_concurrent > max_concurrent:
+                    max_concurrent = current_concurrent
+            await asyncio.sleep(0.1)
+            async with lock:
+                current_concurrent -= 1
+            from obd.comparator.llm_comparator import LLMEvalResult
+            return LLMEvalResult(
+                is_correct=True,
+                category="fully_correct",
+                analysis="Test analysis",
+                missing_info=None,
+                important_info=None
+            )
+
+        # Mock API 调用和评测
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=tracked_api_call):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=tracked_eval):
+                # 执行处理
+                await processor._process_excel_rag_eval_mode(test_df)
+
+                # 验证：最大并发数不应超过 max_workers * 2（API调用 + 评测）
+                # 注意：由于信号量保护API调用和评测，实际并发可能达到 2*max_workers
+                assert max_concurrent <= 4, \
+                    f"并发数 {max_concurrent} 超过了预期限制 4 (2*max_workers)"
+
+                # 验证：至少受到了某种限制（不应该等于任务总数5）
+                assert max_concurrent < 5, \
+                    f"并发控制未生效，所有任务同时执行 (max_concurrent={max_concurrent})"
+
+    @pytest.mark.asyncio
+    async def test_rag_eval_semaphore_release_on_error(self, sample_config):
+        """测试异常情况下信号量正确释放"""
+        from unittest.mock import patch, Mock
+        from obd.models import RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, StandardSchemaConfig, ExecutionModeConfig
+
+        # 创建 RAG schema 配置
+        rag_schema = RAGEvalSchemaConfig(
+            col_question='question',
+            col_scope='scope',
+            col_ref_answer='ref_answer',
+            col_history_eval='history_eval'
+        )
+
+        processor = WorkflowBatchProcessor(
+            sample_config,
+            routing_config=RoutingConfig(),
+            llm_eval_config=LLMEvalConfig(
+                enabled=True,
+                api_key="test",
+                base_url="https://test.com",
+                model="gpt-4",
+                judgment_mode="detailed",
+                temperature=0.0
+            ),
+            execution_mode_config=ExecutionModeConfig(mode="rag_eval"),
+            standard_schema_config=StandardSchemaConfig(
+                col_question="question",
+                col_ground_truth="answer",
+                col_knowledge_base="kb",
+                col_answer_state="state",
+                col_feedback_answer="feedback"
+            ),
+            rag_eval_schema_config=rag_schema
+        )
+
+        # 创建 semantic_judge 的 mock
+        mock_semantic_judge = Mock()
+        processor.semantic_judge = mock_semantic_judge
+
+        test_df = pd.DataFrame({
+            'question': ['q1', 'q2', 'q3'],
+            'scope': ['', '', ''],
+            'ref_answer': ['a1', 'a2', 'a3'],
+            'history_eval': ['', '', '']
+        })
+
+        call_count = 0
+
+        async def sometimes_failing_api(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # 第二次调用失败
+                raise Exception("API Error")
+            await asyncio.sleep(0.1)
+            return "mocked_answer"
+
+        from obd.comparator.llm_comparator import LLMEvalResult
+
+        async def mock_eval(*args, **kwargs):
+            return LLMEvalResult(
+                is_correct=True,
+                category="fully_correct",
+                analysis="Test",
+                missing_info=None,
+                important_info=None
+            )
+
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=sometimes_failing_api):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=mock_eval):
+                # 执行处理（应该能完成，即使中间有错误）
+                results = await processor._process_excel_rag_eval_mode(test_df)
+
+                # 验证：所有任务都被尝试执行
+                assert len(results) == 3, "应该返回3个结果（包括失败的）"
+                assert call_count == 3, "应该尝试调用3次API"
+
+                # 验证：第二个任务有错误
+                assert results[1].error is not None, "第二个任务应该有错误"

@@ -1,11 +1,71 @@
 # OBD 配置文件示例
 # 复制此文件为 config.ini 并填入你的实际配置
 
+# ================================
+# 执行模式配置
+# ================================
+[EXECUTION_MODE]
+# 运行模式选择（必需）
+# standard: 标准问答模式（旧逻辑，支持简单问答评测）
+# rag_eval: RAG 语义评测模式（新逻辑，支持评测范围和历史对比）
+mode = standard
+
+# ================================
+# 模式 A: 标准问答模式配置
+# ================================
+[SCHEMA_STANDARD]
+# 问题列（必需）
+col_question = Question
+
+# 期望答案列（Ground Truth，必需）
+col_ground_truth = Ground Truth
+
+# 可选列（用于路由和评测分支）
+col_knowledge_base = KNOWLEDGE_BASE
+col_answer_state = ANSWER_STATE
+col_feedback_answer = FEEDBACK_ANSWER
+
+# ================================
+# 模式 B: RAG 语义评测模式配置
+# ================================
+[SCHEMA_RAG_EVAL]
+# 问题列（必需）
+col_question = Question
+
+# 评测范围列（必需）
+# 内容示例: "仅关注参数完整性", "重点关注计算公式"
+col_scope = Scope
+
+# 上一版回答列（必需）
+# 用于对比改进情况
+col_ref_answer = Ref_Answer
+
+# 历史评价列（必需）
+# 内容示例: "部分缺失：缺少参数X和参数Y"
+col_history_eval = Evaluation_Notes
+
+# ================================
+# Dify API 配置
+# ================================
 [Dify]
 # Dify API密钥（默认密钥，兼容旧模式）
 # 格式: app-xxxxxxxxxxxxxxxx
 # 请不要在此文件中填写真实密钥，复制后删除注释
-api_key = app-your-api-key-here
+api_key = app-hcYThYPXyCRKTniQU4iDwPNU
+
+# Dify API基础URL
+# 云端Dify: https://api.dify.ai/v1
+# 本地Dify: http://localhost/v1
+base_url = https://localhost/v1
+
+# 响应模式：blocking（阻塞等待）或 streaming（流式响应）
+# blocking: 等待完整响应
+# streaming: 实时接收响应流
+response_mode = blocking
+
+# 请求超时时间（秒）
+# 根据问题复杂度调整，默认60秒
+timeout = 60
 
 [WORKFLOW_MAPPING]
 # 工作流映射表（新模式）
@@ -17,33 +77,9 @@ api_key = app-your-api-key-here
 # knowledge_base_a = app-api-key-for-knowledge-base-a
 # diesel kb = app-api-key-for-diesel-kb
 
-# Dify API基础URL
-# 云端Dify: https://api.dify.ai/v1
-# 本地Dify: http://localhost/v1
-base_url = https://api.dify.ai/v1
-
-# 响应模式：blocking（阻塞等待）或 streaming（流式响应）
-# blocking: 等待完整响应
-# streaming: 实时接收响应流
-response_mode = blocking
-
-# 请求超时时间（秒）
-# 根据问题复杂度调整，默认60秒
-timeout = 60
-
-[Excel]
-# Excel文件路径（相对或绝对路径）
-# 支持 .xlsx 和 .csv 格式
-file_path = questions.xlsx
-
-# 问题列名
-# 确保与Excel文件中的列名一致
-question_column = question
-
-# 答案列名
-# 确保与Excel文件中的列名一致
-answer_column = answer
-
+# ================================
+# 工作流配置
+# ================================
 [Workflow]
 # 工作流ID（可选）
 # 如果要使用特定版本的工作流，请在此填写ID
@@ -72,10 +108,9 @@ comparison_method = auto
 # 避免API限流，推荐0.5-1.0秒
 delay = 0.5
 
-[Output]
-# 结果输出文件路径
-# 将生成包含详细处理结果和统计信息的Excel文件
-file_path = results.xlsx
+# ================================
+# LLM 评测配置
+# ================================
 [LLM_EVAL]
 # 是否启用 LLM 评测
 # true: 启用 LLM 评测，完全依赖 LLM 判断答案是否正确
@@ -85,8 +120,14 @@ enabled = false
 # OpenAI 兼容 API Key
 api_key = sk-your-api-key-here
 
-# API 基础地址（默认使用 OpenAI）
-base_url = https://api.openai.com/v1
+# API 完整地址（包含 /chat/completions 路径）
+# 程序不会自动拼接路径，请配置完整的 API 端点
+#
+# 常用示例:
+# OpenAI:    https://api.openai.com/v1/chat/completions
+# DeepSeek:  https://api.deepseek.com/v1/chat/completions
+# Azure:     https://your-resource.openai.azure.com/openai/deployments/your-deployment/chat/completions?api-version=2024-02-15-preview
+base_url = https://api.openai.com/v1/chat/completions
 
 # 使用的模型
 model = gpt-4o
@@ -101,3 +142,30 @@ judgment_mode = detailed
 
 # LLM 温度参数（0.0-1.0，控制输出的确定性，0.0 最确定）
 temperature = 0.0
+
+# 是否在 Excel 中保存完整 LLM 提示词（调试用）
+# true: 在输出 Excel 中新增"LLM 评测提示词"列，显示发送给 LLM 的完整提示词
+# false: 不保存提示词，减少 Excel 文件大小
+save_prompt = false
+
+# 是否启用评测记录（新增）
+# true: 将每次 LLM 评测的输入输出保存为 JSON 文件，用于调试和分析
+# false: 不保存评测记录
+eval_record_enabled = false
+
+# 评测记录保存路径（新增）
+# 记录将按时间戳分文件夹存储，每个问题一个 JSON 文件
+# 相对或绝对路径，如：logs/eval_records
+eval_record_path = logs/eval_records
+
+# ================================
+# 输出配置
+# ================================
+[Output]
+# 结果输出文件路径
+# 将生成包含详细处理结果和统计信息的Excel文件
+file_path = results.xlsx
+
+# Excel文件路径（相对或绝对路径）
+# 支持 .xlsx 和 .csv 格式
+input_file_path = questions.xlsx
