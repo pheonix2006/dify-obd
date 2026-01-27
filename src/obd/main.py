@@ -111,6 +111,7 @@ def load_config(config_path: str = "config.ini") -> dict:
             "prompt_template": config.get("LLM_EVAL", "prompt_template", fallback=None),
             "judgment_mode": config.get("LLM_EVAL", "judgment_mode", fallback="detailed"),
             "temperature": config.getfloat("LLM_EVAL", "temperature", fallback=0.0),
+            "api_type": config.get("LLM_EVAL", "api_type", fallback="standard"),
             # 评测记录配置
             "eval_record_enabled": config.getboolean("LLM_EVAL", "eval_record_enabled", fallback=False),
             "eval_record_path": config.get("LLM_EVAL", "eval_record_path", fallback="logs/eval_records"),

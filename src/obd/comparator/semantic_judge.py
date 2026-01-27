@@ -251,11 +251,20 @@ class SemanticJudge:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
-        data = {
-            "model": self.config.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.config.temperature
-        }
+        
+        # 构建请求 JSON
+        if self.config.api_type == "custom_azure":
+            data = {
+                "model": self.config.model,
+                "input": [{"role": "user", "content": prompt}],
+                "temperature": self.config.temperature
+            }
+        else:
+            data = {
+                "model": self.config.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": self.config.temperature
+            }
 
         # 记录原始响应（初始化为空）
         raw_response_json = ""
@@ -273,8 +282,27 @@ class SemanticJudge:
                 # 记录原始 JSON 响应
                 raw_response_json = json.dumps(result, ensure_ascii=False)
 
-            if "choices" in result and len(result["choices"]) > 0:
-                content = result["choices"][0]["message"]["content"].strip()
+            # 提取回答内容（根据配置的 api_type 优先解析，但保持容错）
+            content = None
+            
+            # 如果配置为 custom_azure，优先看 output
+            if self.config.api_type == "custom_azure":
+                if "output" in result and len(result["output"]) > 0:
+                    output_content = result["output"][0].get("content", [])
+                    if output_content and isinstance(output_content, list):
+                        content = output_content[0].get("text", "").strip()
+            
+            # 如果没拿到，或者配置是 standard，看 choices
+            if not content:
+                if "choices" in result and len(result["choices"]) > 0:
+                    content = result["choices"][0]["message"]["content"].strip()
+                # 最后的兜底容错：如果 standard 模式但在 output 拿到了
+                elif "output" in result and len(result["output"]) > 0:
+                    output_content = result["output"][0].get("content", [])
+                    if output_content and isinstance(output_content, list):
+                        content = output_content[0].get("text", "").strip()
+
+            if content:
                 # 使用 LLMComparator 的静态方法解析响应
                 parsed_result = LLMComparator._parse_llm_response(content)
 

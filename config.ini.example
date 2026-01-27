@@ -132,6 +132,11 @@ base_url = https://api.openai.com/v1/chat/completions
 # 使用的模型
 model = gpt-4o
 
+# API 类型（必需）
+# standard: 标准 OpenAI 格式（使用 messages 输入，choices 输出）
+# custom_azure: 特殊 Azure 代理格式（使用 input 输入，output 输出）
+api_type = custom_azure
+
 # 请求超时时间（秒）
 timeout = 30
 

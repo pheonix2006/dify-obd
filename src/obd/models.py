@@ -98,6 +98,7 @@ class LLMEvalConfig:
     api_key: Optional[str] = None
     base_url: str = "https://api.openai.com/v1/chat/completions"  # 完整 URL，不自动拼接
     model: str = "gpt-4o"
+    api_type: str = "standard"  # standard 采用 messages/choices, custom_azure 采用 input/output
     prompt_template: Optional[str] = None
     timeout: int = 30
     judgment_mode: str = "detailed"  # detailed/autonomous
