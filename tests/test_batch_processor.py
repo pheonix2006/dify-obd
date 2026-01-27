@@ -406,6 +406,7 @@ class TestWorkflowBatchProcessor:
     @pytest.mark.asyncio
     async def test_rag_eval_semaphore_release_on_error(self, sample_config):
         """测试异常情况下信号量正确释放"""
+        import asyncio
         from unittest.mock import patch, Mock
         from obd.models import RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, StandardSchemaConfig, ExecutionModeConfig
 
@@ -482,3 +483,378 @@ class TestWorkflowBatchProcessor:
 
                 # 验证：第二个任务有错误
                 assert results[1].error is not None, "第二个任务应该有错误"
+
+
+    @pytest.mark.asyncio
+    async def test_results_saver_accumulates_results(self, sample_config):
+        """验证后台保存任务能正确累积并保存结果"""
+        import asyncio
+        from obd.models import QuestionAnswer
+        
+        # 创建一个简单的处理器
+        processor = WorkflowBatchProcessor(sample_config)
+        
+        # 创建队列和结果列表
+        result_queue: asyncio.Queue = asyncio.Queue()
+        all_results: List[QuestionAnswer] = []
+        stop_event = asyncio.Event()
+        
+        # Mock _save_incremental_all 方法
+        save_calls = []
+        async def mock_save(results, output_path):
+            save_calls.append(len(results))
+        
+        processor._save_incremental_all = mock_save
+        
+        # 启动后台保存任务
+        saver_task = asyncio.create_task(
+            processor._results_saver(result_queue, all_results, "dummy_path.xlsx", stop_event)
+        )
+        
+        # 创建测试结果
+        qa1 = QuestionAnswer(question="q1", expected_answer="a1", original_index=0)
+        qa2 = QuestionAnswer(question="q2", expected_answer="a2", original_index=1)
+        qa3 = QuestionAnswer(question="q3", expected_answer="a3", original_index=2)
+        
+        # 放入结果
+        await result_queue.put(qa1)
+        await asyncio.sleep(0.1)  # 等待保存
+        
+        await result_queue.put(qa2)
+        await asyncio.sleep(0.1)
+        
+        await result_queue.put(qa3)
+        await asyncio.sleep(0.1)
+        
+        # 停止后台任务
+        stop_event.set()
+        await saver_task
+        
+        # 验证：所有结果都被累积
+        assert len(all_results) == 3, f"应该有3个结果，实际有 {len(all_results)}"
+        assert all_results[0].question == "q1"
+        assert all_results[1].question == "q2"
+        assert all_results[2].question == "q3"
+        
+        # 验证：每次保存都包含累积的结果
+        assert save_calls == [1, 2, 3], f"保存调用记录应该是 [1,2,3]，实际是 {save_calls}"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_saving_no_overwrite(self, sample_config):
+        """验证并发任务的结果不会相互覆盖"""
+        import asyncio
+        from obd.models import QuestionAnswer, RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, ExecutionModeConfig
+        from obd.models import StandardSchemaConfig
+        from unittest.mock import patch, Mock
+        
+        # 创建 RAG schema 配置
+        rag_schema = RAGEvalSchemaConfig(
+            col_question='question',
+            col_scope='scope',
+            col_ref_answer='ref_answer',
+            col_history_eval='history_eval'
+        )
+        
+        # 创建配置，设置较大的 max_workers 以测试并发
+        from obd.models import WorkflowConfig
+        config_with_workers = WorkflowConfig(
+            api_key=sample_config.api_key,
+            base_url=sample_config.base_url,
+            timeout=sample_config.timeout,
+            max_workers=5,  # 高并发
+            response_mode=sample_config.response_mode,
+            input_variable_name=sample_config.input_variable_name,
+            output_variable_name=sample_config.output_variable_name,
+            workflow_mapping=sample_config.workflow_mapping
+        )
+        
+        # 创建完整的配置
+        processor = WorkflowBatchProcessor(
+            config_with_workers,
+            routing_config=RoutingConfig(),
+            llm_eval_config=LLMEvalConfig(
+                enabled=True,
+                api_key="test",
+                base_url="https://test.com",
+                model="gpt-4",
+                judgment_mode="detailed",
+                temperature=0.0
+            ),
+            execution_mode_config=ExecutionModeConfig(mode="rag_eval"),
+            standard_schema_config=StandardSchemaConfig(
+                col_question="question",
+                col_ground_truth="answer",
+                col_knowledge_base="kb",
+                col_answer_state="state",
+                col_feedback_answer="feedback"
+            ),
+            rag_eval_schema_config=rag_schema
+        )
+        
+        # 创建 semantic_judge 的 mock
+        mock_semantic_judge = Mock()
+        processor.semantic_judge = mock_semantic_judge
+        
+        # 创建测试数据（10行，测试高并发）
+        test_df = pd.DataFrame({
+            'question': [f'q{i}' for i in range(10)],
+            'scope': [''] * 10,
+            'ref_answer': [f'a{i}' for i in range(10)],
+            'history_eval': [''] * 10
+        })
+        
+        # Mock 文件保存操作以避免实际 I/O（异步函数）
+        save_calls = []
+        async def mock_save(results, path):
+            save_calls.append(len(results))
+        
+        # Mock API 调用和评测
+        async def mock_api(*args, **kwargs):
+            await asyncio.sleep(0.05)  # 短延迟增加并发竞争
+            return f"answer_for_{args}"
+        
+        from obd.comparator.llm_comparator import LLMEvalResult
+        async def mock_eval(*args, **kwargs):
+            return LLMEvalResult(
+                is_correct=True,
+                category="fully_correct",
+                analysis="Test",
+                missing_info=None,
+                important_info=None
+            )
+        
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=mock_api):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=mock_eval):
+                with patch.object(processor, '_save_incremental_all', side_effect=mock_save):
+                    # 执行处理
+                    results = await processor._process_excel_rag_eval_mode(
+                        test_df,
+                        output_path="dummy_path.xlsx"  # 使用虚拟路径，save_results 被 mock
+                    )
+        
+        # 验证：所有结果都被保存
+        assert len(results) == 10, f"应该有10个结果，实际有 {len(results)}"
+        
+        # 验证：结果顺序正确（按 original_index 排序）
+        for i, result in enumerate(results):
+            assert result.original_index == i, f"结果 {i} 的索引应该是 {i}，实际是 {result.original_index}"
+            assert result.question == f'q{i}', f"结果 {i} 的问题应该是 q{i}"
+        
+        # 验证：保存被调用了多次（增量保存）
+        assert len(save_calls) > 0, "应该至少有一次保存调用"
+
+    @pytest.mark.asyncio
+    async def test_resume_from_checkpoint(self, sample_config):
+        """验证断点恢复能正确加载已处理记录"""
+        import asyncio
+        from obd.models import RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, ExecutionModeConfig, StandardSchemaConfig
+        from unittest.mock import patch, Mock
+        
+        # 创建 RAG schema 配置
+        rag_schema = RAGEvalSchemaConfig(
+            col_question='question',
+            col_scope='scope',
+            col_ref_answer='ref_answer',
+            col_history_eval='history_eval'
+        )
+        
+        processor = WorkflowBatchProcessor(
+            sample_config,
+            routing_config=RoutingConfig(),
+            llm_eval_config=LLMEvalConfig(
+                enabled=True,
+                api_key="test",
+                base_url="https://test.com",
+                model="gpt-4",
+                judgment_mode="detailed",
+                temperature=0.0
+            ),
+            execution_mode_config=ExecutionModeConfig(mode="rag_eval"),
+            standard_schema_config=StandardSchemaConfig(
+                col_question="question",
+                col_ground_truth="answer",
+                col_knowledge_base="kb",
+                col_answer_state="state",
+                col_feedback_answer="feedback"
+            ),
+            rag_eval_schema_config=rag_schema
+        )
+        
+        # 创建 semantic_judge 的 mock
+        mock_semantic_judge = Mock()
+        processor.semantic_judge = mock_semantic_judge
+        
+        # 创建测试数据（5行）
+        test_df = pd.DataFrame({
+            'question': ['q1', 'q2', 'q3', 'q4', 'q5'],
+            'scope': ['', '', '', '', ''],
+            'ref_answer': ['a1', 'a2', 'a3', 'a4', 'a5'],
+            'history_eval': ['', '', '', '', '']
+        })
+        
+        # 存储已保存的结果，模拟断点恢复
+        saved_results = []
+        
+        # Mock _load_results_from_excel 返回空（第一次运行）
+        def mock_load(path):
+            return saved_results.copy()
+
+        # Mock _save_incremental_all 记录保存的结果（异步函数）
+        async def mock_save(results, path):
+            # 只保存新的结果
+            for r in results:
+                if r.original_index not in [sr.original_index for sr in saved_results]:
+                    saved_results.append(r)
+        
+        # Mock API 调用和评测
+        api_call_count = 0
+        async def mock_api(*args, **kwargs):
+            nonlocal api_call_count
+            api_call_count += 1
+            await asyncio.sleep(0.01)
+            return f"answer_{api_call_count}"
+        
+        from obd.comparator.llm_comparator import LLMEvalResult
+        async def mock_eval(*args, **kwargs):
+            return LLMEvalResult(
+                is_correct=True,
+                category="fully_correct",
+                analysis="Test",
+                missing_info=None,
+                important_info=None
+            )
+        
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=mock_api):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=mock_eval):
+                with patch.object(processor, '_save_incremental_all', side_effect=mock_save):
+                    with patch('os.path.exists', return_value=True):
+                        with patch.object(processor, '_load_results_from_excel', side_effect=mock_load):
+                            # 第一次处理：处理前3行
+                            results1 = await processor._process_excel_rag_eval_mode(
+                                test_df,
+                                start_row=0,
+                                end_row=3,
+                                output_path="dummy.xlsx"
+                            )
+        
+        assert len(results1) == 3, "第一次处理应该有3个结果"
+        assert api_call_count == 3, "第一次应该调用3次API"
+        
+        # 重置计数器
+        api_call_count = 0
+        
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=mock_api):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=mock_eval):
+                with patch.object(processor, '_save_incremental_all', side_effect=mock_save):
+                    with patch('os.path.exists', return_value=True):
+                        with patch.object(processor, '_load_results_from_excel', side_effect=mock_load):
+                            # 第二次处理：处理全部5行（应该跳过前3行）
+                            results2 = await processor._process_excel_rag_eval_mode(
+                                test_df,
+                                start_row=0,
+                                end_row=5,
+                                output_path="dummy.xlsx"
+                            )
+        
+        # 验证：只处理了新的2行
+        assert len(results2) == 5, f"第二次处理应该有5个结果（包括之前加载的），实际有 {len(results2)}"
+        assert api_call_count == 2, f"第二次应该只调用2次API（跳过已处理的3行），实际调用 {api_call_count} 次"
+
+    @pytest.mark.asyncio
+    async def test_error_doesnt_block_saving(self, sample_config):
+        """验证处理错误不会阻止其他结果的保存"""
+        import asyncio
+        from obd.models import RAGEvalSchemaConfig, RoutingConfig, LLMEvalConfig, ExecutionModeConfig, StandardSchemaConfig
+        from unittest.mock import patch, Mock
+        
+        # 创建 RAG schema 配置
+        rag_schema = RAGEvalSchemaConfig(
+            col_question='question',
+            col_scope='scope',
+            col_ref_answer='ref_answer',
+            col_history_eval='history_eval'
+        )
+        
+        processor = WorkflowBatchProcessor(
+            sample_config,
+            routing_config=RoutingConfig(),
+            llm_eval_config=LLMEvalConfig(
+                enabled=True,
+                api_key="test",
+                base_url="https://test.com",
+                model="gpt-4",
+                judgment_mode="detailed",
+                temperature=0.0
+            ),
+            execution_mode_config=ExecutionModeConfig(mode="rag_eval"),
+            standard_schema_config=StandardSchemaConfig(
+                col_question="question",
+                col_ground_truth="answer",
+                col_knowledge_base="kb",
+                col_answer_state="state",
+                col_feedback_answer="feedback"
+            ),
+            rag_eval_schema_config=rag_schema
+        )
+        
+        # 创建 semantic_judge 的 mock
+        mock_semantic_judge = Mock()
+        processor.semantic_judge = mock_semantic_judge
+        
+        # 创建测试数据（5行）
+        test_df = pd.DataFrame({
+            'question': ['q1', 'q2', 'q3', 'q4', 'q5'],
+            'scope': ['', '', '', '', ''],
+            'ref_answer': ['a1', 'a2', 'a3', 'a4', 'a5'],
+            'history_eval': ['', '', '', '', '']
+        })
+        
+        # Mock 文件保存操作以避免实际 I/O（异步函数）
+        save_call_count = 0
+        async def mock_save(results, path):
+            nonlocal save_call_count
+            save_call_count += 1
+        
+        # Mock API 调用：第2和第4个会失败
+        call_count = 0
+        async def mock_api(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count in [2, 4]:  # 第二和第四次调用失败
+                raise Exception(f"API Error {call_count}")
+            await asyncio.sleep(0.01)
+            return f"answer_{call_count}"
+        
+        from obd.comparator.llm_comparator import LLMEvalResult
+        async def mock_eval(*args, **kwargs):
+            return LLMEvalResult(
+                is_correct=True,
+                category="fully_correct",
+                analysis="Test",
+                missing_info=None,
+                important_info=None
+            )
+        
+        with patch.object(processor, '_call_dify_api_for_rag', side_effect=mock_api):
+            with patch.object(processor.semantic_judge, 'evaluate_with_context', side_effect=mock_eval):
+                with patch.object(processor, '_save_incremental_all', side_effect=mock_save):
+                    # 执行处理
+                    results = await processor._process_excel_rag_eval_mode(
+                        test_df,
+                        output_path="dummy.xlsx"
+                    )
+        
+        # 验证：所有结果都返回了（包括错误记录）
+        assert len(results) == 5, f"应该有5个结果，实际有 {len(results)}"
+        
+        # 验证：成功的任务没有错误
+        assert results[0].error is None, "第一个结果不应该有错误"
+        assert results[2].error is None, "第三个结果不应该有错误"
+        assert results[4].error is None, "第五个结果不应该有错误"
+        
+        # 验证：失败的任务有错误
+        assert results[1].error is not None, "第二个结果应该有错误"
+        assert results[3].error is not None, "第四个结果应该有错误"
+        
+        # 验证：保存被调用了多次（即使有错误）
+        assert save_call_count > 0, "应该至少有一次保存调用"

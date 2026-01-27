@@ -77,6 +77,7 @@ class WorkflowBatchProcessor:
         # 共享异步客户端
         self._async_client = httpx.AsyncClient(timeout=config.timeout)
         self._file_lock = asyncio.Lock()
+        self._save_lock = asyncio.Lock()
 
     async def close(self):
         """关闭资源"""
@@ -186,6 +187,48 @@ class WorkflowBatchProcessor:
             sorted_results = sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
             stats = self.calculate_statistics(sorted_results)
             self.save_results(sorted_results, stats, output_path)
+
+    async def _results_saver(
+        self,
+        result_queue: 'asyncio.Queue',
+        all_results: List[QuestionAnswer],
+        output_path: str,
+        stop_event: 'asyncio.Event'
+    ) -> None:
+        """
+        后台保存任务，从队列中取出结果并累积保存
+        
+        使用异步队列和锁保护并发场景下的结果累积，避免竞争条件。
+        
+        Args:
+            result_queue: 存放已完成结果的队列
+            all_results: 累积所有结果的列表（共享可变状态）
+            output_path: 输出文件路径
+            stop_event: 停止事件
+        """
+        while not stop_event.is_set():
+            try:
+                # 等待新结果，超时 0.5 秒检查一次停止事件
+                new_result = await asyncio.wait_for(result_queue.get(), timeout=0.5)
+
+                if new_result is not None:
+                    async with self._save_lock:
+                        all_results.append(new_result)
+                        # 立即保存所有累积的结果
+                        await self._save_incremental_all(all_results, output_path)
+                
+                # 标记任务完成，允许 join() 继续
+                result_queue.task_done()
+
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"保存结果时出错: {e}")
+                # 即使出错也要标记任务完成
+                try:
+                    result_queue.task_done()
+                except:
+                    pass
 
     async def process_row_with_routing(
         self,
@@ -527,6 +570,17 @@ class WorkflowBatchProcessor:
 
         print(f"还需处理 {len(remaining_indices)} 条新记录")
 
+        # 创建结果队列和停止事件
+        result_queue: 'asyncio.Queue[Optional[QuestionAnswer]]' = asyncio.Queue()
+        stop_saver_event = asyncio.Event()
+
+        # 启动后台保存任务
+        saver_task = None
+        if output_path:
+            saver_task = asyncio.create_task(
+                self._results_saver(result_queue, results, output_path, stop_saver_event)
+            )
+
         # 创建信号量
         semaphore = asyncio.Semaphore(self.config.max_workers)
         
@@ -534,15 +588,31 @@ class WorkflowBatchProcessor:
             row = df.iloc[idx]
             res = await self.process_row_with_routing(row, idx, total_rows, semaphore)
             if res:
-                results.append(res)
-                if output_path:
-                    # 每完成一个就增量保存
-                    await self._save_incremental_all(results, output_path)
+                # 将结果放入队列（由后台保存任务处理）
+                await result_queue.put(res)
             return res
 
         # 并发执行
         tasks = [run_task(idx) for idx in remaining_indices]
         await asyncio.gather(*tasks)
+
+        # 等待所有结果都被保存
+        if output_path and saver_task:
+            # 等待队列清空
+            await result_queue.join()
+
+            # 停止后台保存任务
+            stop_saver_event.set()
+
+            # 等待保存任务完成
+            try:
+                await asyncio.wait_for(saver_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                saver_task.cancel()
+                try:
+                    await saver_task
+                except asyncio.CancelledError:
+                    pass
         
         # 排序并返回最终结果
         return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
@@ -594,6 +664,17 @@ class WorkflowBatchProcessor:
             print("所有指定范围内的记录已在之前处理完成。")
             return results
 
+        # 创建结果队列和停止事件
+        result_queue: 'asyncio.Queue[Optional[QuestionAnswer]]' = asyncio.Queue()
+        stop_saver_event = asyncio.Event()
+
+        # 启动后台保存任务
+        saver_task = None
+        if output_path:
+            saver_task = asyncio.create_task(
+                self._results_saver(result_queue, results, output_path, stop_saver_event)
+            )
+
         semaphore = asyncio.Semaphore(self.config.max_workers)
 
         async def process_task(idx):
@@ -634,13 +715,30 @@ class WorkflowBatchProcessor:
             else:
                 print(f"  ✗ 失败: {qa.error}")
             
-            results.append(qa)
-            if output_path:
-                await self._save_incremental_all(results, output_path)
+            # 将结果放入队列（由后台保存任务处理）
+            await result_queue.put(qa)
             return qa
 
         tasks = [process_task(i) for i in remaining_indices]
         await asyncio.gather(*tasks)
+
+        # 等待所有结果都被保存
+        if output_path and saver_task:
+            # 等待队列清空
+            await result_queue.join()
+
+            # 停止后台保存任务
+            stop_saver_event.set()
+
+            # 等待保存任务完成
+            try:
+                await asyncio.wait_for(saver_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                saver_task.cancel()
+                try:
+                    await saver_task
+                except asyncio.CancelledError:
+                    pass
 
         return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
 
@@ -1009,116 +1107,248 @@ class WorkflowBatchProcessor:
         # 创建信号量
         semaphore = asyncio.Semaphore(self.config.max_workers)
 
-        async def run_task(idx):
-            row = df.iloc[idx]
-            try:
-                # 提取列值
-                question = str(row[schema.col_question])
-                scope = row.get(schema.col_scope, "")
-                ref_answer = row.get(schema.col_ref_answer, "")
-                history_eval = row.get(schema.col_history_eval, "")
+        # 如果有输出路径，使用队列+后台保存模式
+        if output_path:
+            # 创建结果队列和停止事件
+            result_queue: 'asyncio.Queue[Optional[QuestionAnswer]]' = asyncio.Queue()
+            stop_saver_event = asyncio.Event()
 
-                print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
+            # 启动后台保存任务
+            saver_task = asyncio.create_task(
+                self._results_saver(result_queue, results, output_path, stop_saver_event)
+            )
 
-                # 异步操作 - 使用信号量保护
-                async with semaphore:
-                    # 调用 Dify API 获取实际回答
-                    workflow_result = await self._call_dify_api_for_rag(question)
+            async def run_task(idx):
+                row = df.iloc[idx]
+                try:
+                    # 提取列值
+                    question = str(row[schema.col_question])
+                    scope = row.get(schema.col_scope, "")
+                    ref_answer = row.get(schema.col_ref_answer, "")
+                    history_eval = row.get(schema.col_history_eval, "")
 
-                    # RAG响应解析（新增）
-                    answer_for_eval = workflow_result
-                    extracted_question = None
-                    rerank_sources = None
-                    llm_answer = None
-                    is_rag_format = False
+                    print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
 
-                    if workflow_result:
-                        parsed = RAGResponseParser.parse(str(workflow_result))
+                    # 异步操作 - 使用信号量保护
+                    async with semaphore:
+                        # 调用 Dify API 获取实际回答
+                        workflow_result = await self._call_dify_api_for_rag(question)
 
-                        extracted_question = parsed.question if parsed.question else None
-                        rerank_sources = parsed.rerank_sources if parsed.rerank_sources else None
-                        llm_answer = parsed.llm_answer if parsed.llm_answer else None
-                        is_rag_format = parsed.is_valid_format
+                        # RAG响应解析（新增）
+                        answer_for_eval = workflow_result
+                        extracted_question = None
+                        rerank_sources = None
+                        llm_answer = None
+                        is_rag_format = False
 
-                        # 如果成功解析，使用llm_answer进行评测
-                        if parsed.is_valid_format and parsed.llm_answer:
-                            answer_for_eval = parsed.llm_answer
+                        if workflow_result:
+                            parsed = RAGResponseParser.parse(str(workflow_result))
 
-                    # 使用 SemanticJudge 进行评测
+                            extracted_question = parsed.question if parsed.question else None
+                            rerank_sources = parsed.rerank_sources if parsed.rerank_sources else None
+                            llm_answer = parsed.llm_answer if parsed.llm_answer else None
+                            is_rag_format = parsed.is_valid_format
+
+                            # 如果成功解析，使用llm_answer进行评测
+                            if parsed.is_valid_format and parsed.llm_answer:
+                                answer_for_eval = parsed.llm_answer
+
+                        # 使用 SemanticJudge 进行评测
+                        if self.semantic_judge:
+                            eval_result = await self.semantic_judge.evaluate_with_context(
+                                question=question,
+                                actual_answer=answer_for_eval,  # 使用解析后的纯净答案
+                                rerank_sources=rerank_sources,  # 传递 rerank 片段
+                                scope=scope,
+                                ref_answer=ref_answer,
+                                history_eval=history_eval,
+                                question_index=idx  # 传递问题索引用于记录
+                            )
+
+                    # 结果处理（不需要并发控制）
+                    # 创建 QuestionAnswer 对象
                     if self.semantic_judge:
-                        eval_result = await self.semantic_judge.evaluate_with_context(
+                        qa = QuestionAnswer(
                             question=question,
-                            actual_answer=answer_for_eval,  # 使用解析后的纯净答案
-                            rerank_sources=rerank_sources,  # 传递 rerank 片段
+                            expected_answer=ref_answer,  # 使用上一版回答作为期望
+                            original_index=idx,
+                            workflow_result=workflow_result,
+                            is_correct=eval_result.is_correct,
+                            llm_analysis=eval_result.analysis,
+                            llm_category=eval_result.category,
+                            missing_info=eval_result.missing_info,
+                            important_info=eval_result.important_info,
                             scope=scope,
                             ref_answer=ref_answer,
                             history_eval=history_eval,
-                            question_index=idx  # 传递问题索引用于记录
+                            improvement_analysis=eval_result.version_analysis,  # 版本对比分析
+                            # 新增字段：RAG响应解析结果
+                            extracted_question=extracted_question,
+                            rerank_sources=rerank_sources,
+                            llm_answer=llm_answer,
+                            is_rag_format=is_rag_format
+                        )
+                    else:
+                        # 未配置评测器，仅记录回答
+                        qa = QuestionAnswer(
+                            question=question,
+                            expected_answer=ref_answer,
+                            original_index=idx,
+                            workflow_result=workflow_result,
+                            is_evaluated=False,
+                            # 新增字段：RAG响应解析结果
+                            extracted_question=extracted_question,
+                            rerank_sources=rerank_sources,
+                            llm_answer=llm_answer,
+                            is_rag_format=is_rag_format
                         )
 
-                # 结果处理（不需要并发控制）
-                # 创建 QuestionAnswer 对象
-                if self.semantic_judge:
+                    # 将结果放入队列（由后台保存任务处理）
+                    await result_queue.put(qa)
+                    return qa
+
+                except Exception as e:
+                    logger.error(f"处理第 {idx} 行时出错: {str(e)}")
+                    # 创建错误记录
                     qa = QuestionAnswer(
-                        question=question,
-                        expected_answer=ref_answer,  # 使用上一版回答作为期望
+                        question=row.get(schema.col_question, ""),
+                        expected_answer="",
                         original_index=idx,
-                        workflow_result=workflow_result,
-                        is_correct=eval_result.is_correct,
-                        llm_analysis=eval_result.analysis,
-                        llm_category=eval_result.category,
-                        missing_info=eval_result.missing_info,
-                        important_info=eval_result.important_info,
-                        scope=scope,
-                        ref_answer=ref_answer,
-                        history_eval=history_eval,
-                        improvement_analysis=eval_result.version_analysis,  # 版本对比分析
-                        # 新增字段：RAG响应解析结果
-                        extracted_question=extracted_question,
-                        rerank_sources=rerank_sources,
-                        llm_answer=llm_answer,
-                        is_rag_format=is_rag_format
+                        error=str(e)
                     )
-                else:
-                    # 未配置评测器，仅记录回答
+                    # 错误结果也放入队列
+                    await result_queue.put(qa)
+                    return qa
+
+            # 并发执行
+            tasks = [run_task(idx) for idx in remaining_indices]
+            await asyncio.gather(*tasks)
+
+            # 等待所有结果都被保存
+            # 等待队列清空
+            await result_queue.join()
+
+            # 停止后台保存任务
+            stop_saver_event.set()
+
+            # 等待保存任务完成
+            try:
+                await asyncio.wait_for(saver_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                saver_task.cancel()
+                try:
+                    await saver_task
+                except asyncio.CancelledError:
+                    pass
+        else:
+            # 无输出路径时，直接使用锁保护 results 列表
+            async def run_task_no_save(idx):
+                row = df.iloc[idx]
+                try:
+                    # 提取列值
+                    question = str(row[schema.col_question])
+                    scope = row.get(schema.col_scope, "")
+                    ref_answer = row.get(schema.col_ref_answer, "")
+                    history_eval = row.get(schema.col_history_eval, "")
+
+                    print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
+
+                    # 异步操作 - 使用信号量保护
+                    async with semaphore:
+                        # 调用 Dify API 获取实际回答
+                        workflow_result = await self._call_dify_api_for_rag(question)
+
+                        # RAG响应解析（新增）
+                        answer_for_eval = workflow_result
+                        extracted_question = None
+                        rerank_sources = None
+                        llm_answer = None
+                        is_rag_format = False
+
+                        if workflow_result:
+                            parsed = RAGResponseParser.parse(str(workflow_result))
+
+                            extracted_question = parsed.question if parsed.question else None
+                            rerank_sources = parsed.rerank_sources if parsed.rerank_sources else None
+                            llm_answer = parsed.llm_answer if parsed.llm_answer else None
+                            is_rag_format = parsed.is_valid_format
+
+                            # 如果成功解析，使用llm_answer进行评测
+                            if parsed.is_valid_format and parsed.llm_answer:
+                                answer_for_eval = parsed.llm_answer
+
+                        # 使用 SemanticJudge 进行评测
+                        if self.semantic_judge:
+                            eval_result = await self.semantic_judge.evaluate_with_context(
+                                question=question,
+                                actual_answer=answer_for_eval,  # 使用解析后的纯净答案
+                                rerank_sources=rerank_sources,  # 传递 rerank 片段
+                                scope=scope,
+                                ref_answer=ref_answer,
+                                history_eval=history_eval,
+                                question_index=idx  # 传递问题索引用于记录
+                            )
+
+                    # 结果处理（不需要并发控制）
+                    # 创建 QuestionAnswer 对象
+                    if self.semantic_judge:
+                        qa = QuestionAnswer(
+                            question=question,
+                            expected_answer=ref_answer,  # 使用上一版回答作为期望
+                            original_index=idx,
+                            workflow_result=workflow_result,
+                            is_correct=eval_result.is_correct,
+                            llm_analysis=eval_result.analysis,
+                            llm_category=eval_result.category,
+                            missing_info=eval_result.missing_info,
+                            important_info=eval_result.important_info,
+                            scope=scope,
+                            ref_answer=ref_answer,
+                            history_eval=history_eval,
+                            improvement_analysis=eval_result.version_analysis,  # 版本对比分析
+                            # 新增字段：RAG响应解析结果
+                            extracted_question=extracted_question,
+                            rerank_sources=rerank_sources,
+                            llm_answer=llm_answer,
+                            is_rag_format=is_rag_format
+                        )
+                    else:
+                        # 未配置评测器，仅记录回答
+                        qa = QuestionAnswer(
+                            question=question,
+                            expected_answer=ref_answer,
+                            original_index=idx,
+                            workflow_result=workflow_result,
+                            is_evaluated=False,
+                            # 新增字段：RAG响应解析结果
+                            extracted_question=extracted_question,
+                            rerank_sources=rerank_sources,
+                            llm_answer=llm_answer,
+                            is_rag_format=is_rag_format
+                        )
+
+                    # 使用锁保护 results 列表
+                    async with self._save_lock:
+                        results.append(qa)
+                    return qa
+
+                except Exception as e:
+                    logger.error(f"处理第 {idx} 行时出错: {str(e)}")
+                    # 创建错误记录
                     qa = QuestionAnswer(
-                        question=question,
-                        expected_answer=ref_answer,
+                        question=row.get(schema.col_question, ""),
+                        expected_answer="",
                         original_index=idx,
-                        workflow_result=workflow_result,
-                        is_evaluated=False,
-                        # 新增字段：RAG响应解析结果
-                        extracted_question=extracted_question,
-                        rerank_sources=rerank_sources,
-                        llm_answer=llm_answer,
-                        is_rag_format=is_rag_format
+                        error=str(e)
                     )
+                    # 错误结果也需要保存
+                    async with self._save_lock:
+                        results.append(qa)
+                    return qa
 
-                if output_path:
-                    # 每完成一个就增量保存
-                    await self._save_incremental_all(results + [qa], output_path)
-
-                return qa
-
-            except Exception as e:
-                logger.error(f"处理第 {idx} 行时出错: {str(e)}")
-                # 创建错误记录
-                qa = QuestionAnswer(
-                    question=row.get(schema.col_question, ""),
-                    expected_answer="",
-                    original_index=idx,
-                    error=str(e)
-                )
-                return qa
-
-        # 并发执行
-        tasks = [run_task(idx) for idx in remaining_indices]
-        new_results = await asyncio.gather(*tasks)
-
-        # 过滤掉 None 结果
-        for result in new_results:
-            if result is not None:
-                results.append(result)
+            # 并发执行
+            tasks = [run_task_no_save(idx) for idx in remaining_indices]
+            await asyncio.gather(*tasks)
 
         # 排序并返回最终结果
         return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)
