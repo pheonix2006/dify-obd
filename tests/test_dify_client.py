@@ -71,8 +71,6 @@ class TestDifyWorkflowClient:
         # 验证异常消息包含"API调用失败"
         assert "API调用失败" in str(exc_info.value)
 
-from unittest.mock import MagicMock
-
     @patch('requests.Session.get')
     def test_get_workflow_run_detail_success(self, mock_get):
         """测试成功获取工作流详情"""

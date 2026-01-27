@@ -8,7 +8,8 @@ from typing import Dict
 import os
 from obd.models import (
     WorkflowConfig, RoutingConfig, LLMEvalConfig,
-    ExecutionModeConfig, StandardSchemaConfig, RAGEvalSchemaConfig
+    ExecutionModeConfig, StandardSchemaConfig, RAGEvalSchemaConfig,
+    DualWorkflowConfig, DualWorkflowSchemaConfig
 )
 from obd.processor.batch_processor import WorkflowBatchProcessor
 os.environ["NO_PROXY"] = "localhost,127.0.0.1" + ("," + os.environ.get("NO_PROXY", "")) if os.environ.get("NO_PROXY") else "localhost,127.0.0.1"
@@ -73,6 +74,11 @@ def load_config(config_path: str = "config.ini") -> dict:
         "SCHEMA_RAG_EVAL", "col_history_eval", fallback="Evaluation_Notes"
     )
 
+    # 双工作流对比评测模式列配置
+    dual_question_col = config.get(
+        "SCHEMA_DUAL_WORKFLOW", "col_question", fallback="Question"
+    )
+
     # 兼容旧配置：从 Excel 节读取（如果存在）
     excel_path = None
     question_column = "question"
@@ -85,6 +91,20 @@ def load_config(config_path: str = "config.ini") -> dict:
     elif config.has_section("Output"):
         # 使用新的配置节
         excel_path = config.get("Output", "input_file_path", fallback=None)
+
+    # ===== 双工作流配置（新架构：单工作流+双模型输出）=====
+    dual_workflow_config = {}
+    if config.has_section("DUAL_WORKFLOW"):
+        dual_workflow_config = {
+            "api_key": config.get("DUAL_WORKFLOW", "api_key", fallback=""),
+            "workflow_id": config.get("DUAL_WORKFLOW", "workflow_id", fallback=None),
+            "label_1": config.get("DUAL_WORKFLOW", "label_1", fallback="LLM1"),
+            "label_2": config.get("DUAL_WORKFLOW", "label_2", fallback="LLM2"),
+            "label_history": config.get("DUAL_WORKFLOW", "label_history", fallback="历史回答"),
+            "base_url": config.get("DUAL_WORKFLOW", "base_url", fallback="https://api.dify.ai/v1"),
+            "response_mode": config.get("DUAL_WORKFLOW", "response_mode", fallback="blocking"),
+            "timeout": config.getint("DUAL_WORKFLOW", "timeout", fallback=60),
+        }
 
     return {
         "api_key": config.get("Dify", "api_key"),
@@ -130,7 +150,13 @@ def load_config(config_path: str = "config.ini") -> dict:
             "col_scope": rag_scope_col,
             "col_ref_answer": rag_ref_answer_col,
             "col_history_eval": rag_history_eval_col,
-        }
+        },
+        # 双工作流模式列配置
+        "dual_workflow_schema": {
+            "col_question": dual_question_col,
+            "col_history": config.get("SCHEMA_DUAL_WORKFLOW", "col_history", fallback=None),
+        },
+        "dual_workflow": dual_workflow_config,
     }
 
 
@@ -187,6 +213,16 @@ async def main():
         col_history_eval=config_data["rag_eval_schema"]["col_history_eval"]
     )
 
+    # 新增：创建双工作流配置
+    dual_workflow_config = None
+    dual_workflow_schema_config = None
+    if config_data["dual_workflow"]:
+        dual_workflow_config = DualWorkflowConfig(**config_data["dual_workflow"])
+        dual_workflow_schema_config = DualWorkflowSchemaConfig(
+            col_question=config_data["dual_workflow_schema"]["col_question"],
+            col_history=config_data["dual_workflow_schema"].get("col_history")
+        )
+
     # 创建批处理器（传入新的配置对象）
     processor = WorkflowBatchProcessor(
         workflow_config,
@@ -194,7 +230,9 @@ async def main():
         llm_eval_config=llm_eval_config,
         execution_mode_config=execution_mode_config,
         standard_schema_config=standard_schema_config,
-        rag_eval_schema_config=rag_eval_schema_config
+        rag_eval_schema_config=rag_eval_schema_config,
+        dual_workflow_config=dual_workflow_config,
+        dual_workflow_schema_config=dual_workflow_schema_config
     )
 
     try:
@@ -208,6 +246,11 @@ async def main():
             print(f"LLM 评测: 未启用")
         if config_data.get('workflow_mapping'):
             print(f"已加载 {len(config_data['workflow_mapping'])} 个工作流映射")
+        # 新增：双工作流模式输出（单工作流+双模型输出）
+        if execution_mode_config.mode == "dual_workflow_compare" and dual_workflow_config:
+            print(f"双工作流模式:")
+            print(f"  - {dual_workflow_config.label_1} vs {dual_workflow_config.label_2} vs {dual_workflow_config.label_history}")
+            print(f"  - API Key: {dual_workflow_config.api_key[:20]}...")
         print()
         print("-" * 60)
 
@@ -230,24 +273,41 @@ async def main():
         print()
         print("=" * 60)
         print("统计结果:")
-        print(f"  总数量: {statistics['total']}")
-        print(f"  评测数量: {statistics['evaluated']}")
-        print(f"  异常模式数量: {statistics['feedback_mode']}")
-        print(f"  正确数量: {statistics['correct']}")
-        print(f"  错误数量: {statistics['incorrect']}")
-        print(f"  失败数量: {statistics['failed']}")
-        print(f"  准确率: {statistics['accuracy']:.2%}")
-        print(f"  成功率: {statistics['success_rate']:.2%}")
-        # 4级分类统计
-        if statistics.get('category_details'):
-            print(f"  4级分类统计:")
-            for category, details in statistics['category_details'].items():
-                print(f"    - {details['label']}: {details['count']} ({details['percentage']:.2%})")
+
+        # 根据模式输出不同的统计信息
+        if execution_mode_config.mode == "dual_workflow_compare":
+            # 双工作流模式统计
+            label_1 = dual_workflow_config.label_1 if dual_workflow_config else "Workflow_A"
+            label_2 = dual_workflow_config.label_2 if dual_workflow_config else "Workflow_B"
+            label_history = dual_workflow_config.label_history if dual_workflow_config else "历史回答"
+            print(f"  总数量: {statistics['total']}")
+            print(f"  {label_1}获胜次数: {statistics['llm1_wins']}")
+            print(f"  {label_2}获胜次数: {statistics['llm2_wins']}")
+            print(f"  {label_history}获胜次数: {statistics['history_wins']}")
+            print(f"  平局次数: {statistics['ties']}")
+            print(f"  {label_1}获胜率: {statistics['llm1_win_rate']:.2%}")
+            print(f"  {label_2}获胜率: {statistics['llm2_win_rate']:.2%}")
+            print(f"  {label_history}获胜率: {statistics['history_win_rate']:.2%}")
         else:
-            if statistics.get('match_type_stats'):
-                print(f"  匹配类型统计:")
-                for match_type, count in statistics['match_type_stats'].items():
-                    print(f"    - {match_type}: {count}")
+            # 标准模式和 RAG 模式统计
+            print(f"  总数量: {statistics['total']}")
+            print(f"  评测数量: {statistics['evaluated']}")
+            print(f"  异常模式数量: {statistics['feedback_mode']}")
+            print(f"  正确数量: {statistics['correct']}")
+            print(f"  错误数量: {statistics['incorrect']}")
+            print(f"  失败数量: {statistics['failed']}")
+            print(f"  准确率: {statistics['accuracy']:.2%}")
+            print(f"  成功率: {statistics['success_rate']:.2%}")
+            # 4级分类统计
+            if statistics.get('category_details'):
+                print(f"  4级分类统计:")
+                for category, details in statistics['category_details'].items():
+                    print(f"    - {details['label']}: {details['count']} ({details['percentage']:.2%})")
+            else:
+                if statistics.get('match_type_stats'):
+                    print(f"  匹配类型统计:")
+                    for match_type, count in statistics['match_type_stats'].items():
+                        print(f"    - {match_type}: {count}")
         print("=" * 60)
 
         # 保存结果

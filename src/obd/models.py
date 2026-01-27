@@ -9,6 +9,23 @@ if TYPE_CHECKING:
     from obd.comparator.llm_comparator import LLMEvalResult
 
 
+# 类型注解导出
+__all__ = [
+    "AnswerCategory",
+    "WorkflowConfig",
+    "RoutingConfig",
+    "ExecutionModeConfig",
+    "StandardSchemaConfig",
+    "RAGEvalSchemaConfig",
+    "DualWorkflowSchemaConfig",
+    "DualModelResponseParts",
+    "DualWorkflowConfig",
+    "DualWorkflowEvalResult",
+    "LLMEvalConfig",
+    "QuestionAnswer",
+]
+
+
 class AnswerCategory(Enum):
     """4级答案分类"""
     FULLY_CORRECT = "fully_correct"        # 完全正确
@@ -60,11 +77,11 @@ class RoutingConfig:
 @dataclass
 class ExecutionModeConfig:
     """执行模式配置"""
-    mode: str = "standard"  # standard 或 rag_eval
+    mode: str = "standard"  # standard, rag_eval, dual_workflow_compare
 
     def __post_init__(self):
         """验证模式配置"""
-        valid_modes = ["standard", "rag_eval"]
+        valid_modes = ["standard", "rag_eval", "dual_workflow_compare"]
         if self.mode not in valid_modes:
             raise ValueError(
                 f"无效的执行模式: {self.mode}\n"
@@ -89,6 +106,62 @@ class RAGEvalSchemaConfig:
     col_scope: str = "Scope"
     col_ref_answer: str = "Ref_Answer"
     col_history_eval: str = "Evaluation_Notes"
+
+
+@dataclass
+class DualWorkflowSchemaConfig:
+    """双工作流对比评测模式列配置"""
+    col_question: str = "Question"
+    col_history: Optional[str] = None  # 历史回答列（用于三方对比）
+
+
+@dataclass
+class DualModelResponseParts:
+    """双模型响应解析结果（由 DualModelResponseParser 生成）"""
+    question: str  # 原始问题
+    rerank_sources: str  # 召回片段
+    llm1_output: str  # LLM1 输出
+    llm2_output: str  # LLM2 输出
+    is_valid_format: bool = True  # 是否成功解析
+
+
+@dataclass
+class DualWorkflowConfig:
+    """双工作流配置（单工作流+双模型输出）"""
+    # 单工作流配置
+    api_key: str  # 单一 API Key
+    workflow_id: Optional[str] = None
+
+    # 标签配置（用于结果展示）
+    label_1: str = "LLM1"
+    label_2: str = "LLM2"
+    label_history: str = "历史回答"  # 历史回答标签
+
+    # 共享配置
+    base_url: str = "https://api.dify.ai/v1"
+    response_mode: str = "blocking"
+    timeout: int = 60
+
+
+@dataclass
+class DualWorkflowEvalResult:
+    """三方对比评测结果（LLM1 vs LLM2 vs History）"""
+    winner: str  # "llm1", "llm2", "history", "tie"
+    confidence: str  # "high", "medium", "low"
+
+    # 综合分析
+    overall_analysis: str  # 总体分析
+
+    # 各答案简要评价（优缺点合一）
+    llm1_comment: str
+    llm2_comment: str
+    history_comment: str
+
+    # 推荐理由
+    recommendation: str
+
+    prompt: Optional[str] = None
+    raw_response: Optional[str] = None
 
 
 @dataclass
@@ -161,6 +234,14 @@ class QuestionAnswer:
 
     # LLM评测完整结果（包含prompt等调试信息）
     llm_eval: Optional["LLMEvalResult"] = None
+
+    # 双工作流对比评测模式字段
+    workflow_1_result: Optional[str] = None  # 兼容保留（映射到 llm1）
+    workflow_2_result: Optional[str] = None  # 兼容保留（映射到 llm2）
+    history_answer: Optional[str] = None  # 历史回答（用于三方对比）
+    winner: Optional[str] = None  # 获胜者: "llm1", "llm2", "history", "tie"
+    comparison_analysis: Optional[str] = None  # 对比分析结果（映射到 overall_analysis）
+    dual_workflow_eval: Optional["DualWorkflowEvalResult"] = None  # 完整评测结果
 
     @property
     def answer_category(self) -> Optional[AnswerCategory]:

@@ -8,6 +8,7 @@
 # 运行模式选择（必需）
 # standard: 标准问答模式（旧逻辑，支持简单问答评测）
 # rag_eval: RAG 语义评测模式（新逻辑，支持评测范围和历史对比）
+# dual_workflow_compare: 双工作流对比评测模式（对比两个工作流的答案质量）
 mode = standard
 
 # ================================
@@ -45,6 +46,17 @@ col_ref_answer = Ref_Answer
 col_history_eval = Evaluation_Notes
 
 # ================================
+# 模式 C: 双工作流对比评测模式配置
+# ================================
+[SCHEMA_DUAL_WORKFLOW]
+# 问题列（必需）
+col_question = Question
+
+# 历史回答列（可选）
+# 如果有历史版本答案，可用于三方对比评测
+col_history = Historical Answer
+
+# ================================
 # Dify API 配置
 # ================================
 [Dify]
@@ -76,6 +88,38 @@ timeout = 60
 # workflow 2 = app-api-key-for-workflow-2
 # knowledge_base_a = app-api-key-for-knowledge-base-a
 # diesel kb = app-api-key-for-diesel-kb
+
+# ================================
+# 双工作流配置（dual_workflow_compare 模式）
+# 单工作流 + 双模型输出架构
+# ================================
+[DUAL_WORKFLOW]
+# 单一工作流配置（API Key）
+# Dify 工作流需要返回结构化的双模型输出：
+# 问题：{{#sys.query#}}
+# rerank后的片段：{{#...formatted_result#}}
+# 经过llm1的结果：{{#...text#}}
+# 经过llm2的结果：{{#...text#}}
+api_key = app-your-api-key
+
+# 工作流ID（可选）
+# 如果要使用特定版本的工作流，请在此填写ID
+workflow_id =
+
+# 标签配置（用于结果展示）
+label_1 = LLM1
+label_2 = LLM2
+label_history = 历史回答
+
+# 共享配置
+# Dify API基础URL
+base_url = https://api.dify.ai/v1
+
+# 响应模式：blocking（阻塞等待）或 streaming（流式响应）
+response_mode = blocking
+
+# 请求超时时间（秒）
+timeout = 60
 
 # ================================
 # 工作流配置

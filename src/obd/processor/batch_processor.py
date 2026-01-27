@@ -12,9 +12,11 @@ import pandas as pd
 from obd.client.dify_client import DifyWorkflowClient
 from obd.comparator.answer_comparator import AnswerComparator
 from obd.comparator.llm_comparator import LLMComparator
+from obd.comparator.dual_workflow_comparator import DualWorkflowComparator
 from obd.models import (
     QuestionAnswer, WorkflowConfig, RoutingConfig, LLMEvalConfig,
-    ExecutionModeConfig, StandardSchemaConfig, RAGEvalSchemaConfig
+    ExecutionModeConfig, StandardSchemaConfig, RAGEvalSchemaConfig,
+    DualWorkflowConfig, DualWorkflowSchemaConfig, DualWorkflowEvalResult
 )
 from obd.processor.routing import WorkflowRouting
 from obd.processor.evaluation import EvaluationBranch
@@ -37,7 +39,9 @@ class WorkflowBatchProcessor:
         llm_eval_config: Optional[LLMEvalConfig] = None,
         execution_mode_config: Optional['ExecutionModeConfig'] = None,  # 新增
         standard_schema_config: Optional['StandardSchemaConfig'] = None,  # 新增
-        rag_eval_schema_config: Optional['RAGEvalSchemaConfig'] = None  # 新增
+        rag_eval_schema_config: Optional['RAGEvalSchemaConfig'] = None,  # 新增
+        dual_workflow_config: Optional['DualWorkflowConfig'] = None,  # 新增
+        dual_workflow_schema_config: Optional['DualWorkflowSchemaConfig'] = None  # 新增
     ):
         self.config = config
         self.routing_config = routing_config or RoutingConfig()
@@ -46,12 +50,14 @@ class WorkflowBatchProcessor:
         self.comparator = AnswerComparator()
         self.llm_comparator = LLMComparator(self.llm_eval_config)
 
-        # 新增：保存模式配置
+        # 保存模式配置
         self.execution_mode_config = execution_mode_config
         self.standard_schema_config = standard_schema_config
         self.rag_eval_schema_config = rag_eval_schema_config
+        self.dual_workflow_config = dual_workflow_config
+        self.dual_workflow_schema_config = dual_workflow_schema_config
 
-        # 新增：创建评测记录器（如果启用）
+        # 创建评测记录器（如果启用）
         self.eval_recorder: Optional[EvalRecorder] = None
         if self.llm_eval_config.eval_record_enabled:
             self.eval_recorder = EvalRecorder(
@@ -60,7 +66,7 @@ class WorkflowBatchProcessor:
             )
             logger.info(f"评测记录器已启用，记录目录: {self.eval_recorder.get_session_dir()}")
 
-        # 新增：创建 SemanticJudge（用于 rag_eval 模式），传递记录器
+        # 创建 SemanticJudge（用于 rag_eval 模式），传递记录器
         if llm_eval_config:
             from ..comparator.semantic_judge import SemanticJudge
             self.semantic_judge = SemanticJudge(
@@ -69,6 +75,15 @@ class WorkflowBatchProcessor:
             )
         else:
             self.semantic_judge = None
+
+        # 创建 DualWorkflowComparator（用于 dual_workflow_compare 模式）
+        if dual_workflow_config and llm_eval_config:
+            self.dual_workflow_comparator = DualWorkflowComparator(
+                llm_eval_config,
+                recorder=self.eval_recorder
+            )
+        else:
+            self.dual_workflow_comparator = None
 
         # 初始化路由和评测组件
         self.routing = WorkflowRouting(config)
@@ -114,13 +129,16 @@ class WorkflowBatchProcessor:
         try:
             import pandas as pd
 
-            # 自动检测 sheet 名称，支持两种模式
+            # 自动检测 sheet 名称，支持多种模式
             xl_file = pd.ExcelFile(output_path)
             sheet_name = None
             detected_mode = None
 
             # 按优先级检测 sheet 名称
-            if "RAG 评测结果" in xl_file.sheet_names:
+            if "双工作流对比结果" in xl_file.sheet_names:
+                sheet_name = "双工作流对比结果"
+                detected_mode = "DUAL_WORKFLOW"
+            elif "RAG 评测结果" in xl_file.sheet_names:
                 sheet_name = "RAG 评测结果"
                 detected_mode = "RAG"
             elif "处理结果" in xl_file.sheet_names:
@@ -137,7 +155,9 @@ class WorkflowBatchProcessor:
             df = pd.read_excel(output_path, sheet_name=sheet_name)
 
             # 根据检测到的模式调用对应的加载方法
-            if detected_mode == "RAG":
+            if detected_mode == "DUAL_WORKFLOW":
+                return self._load_dual_workflow_results_from_df(df)
+            elif detected_mode == "RAG":
                 return self._load_rag_results_from_df(df)
             else:
                 return self._load_standard_results_from_df(df)
@@ -258,6 +278,84 @@ class WorkflowBatchProcessor:
             qa.llm_analysis = "N/A" if llm_analysis_val == "N/A" else llm_analysis_val
             qa.missing_info = row.get("缺失信息", "")
 
+            results.append(qa)
+
+        return results
+
+
+    def _load_dual_workflow_results_from_df(self, df: 'pd.DataFrame') -> List[QuestionAnswer]:
+        """从 DataFrame 加载双工作流对比评测结果
+        
+        支持动态列名解析，能够处理自定义标签（如 Workflow_A、Model_A 等）
+        """
+        results = []
+        
+        # 从列名中推断工作流1和工作流2的回答列
+        # 优先使用配置中的标签，否则从列名推断
+        label_1 = self.dual_workflow_config.label_1 if self.dual_workflow_config else "Workflow_A"
+        label_2 = self.dual_workflow_config.label_2 if self.dual_workflow_config else "Workflow_B"
+        
+        # 构建可能的列名模式
+        possible_w1_cols = [
+            f"{label_1}回答",
+            "工作流1回答",
+            "workflow_1回答",
+            "Workflow_1回答",
+            f"{label_1} Answer",  # 英文支持
+        ]
+        possible_w2_cols = [
+            f"{label_2}回答",
+            "工作流2回答",
+            "workflow_2回答",
+            "Workflow_2回答",
+            f"{label_2} Answer",  # 英文支持
+        ]
+        
+        # 查找实际存在的列名
+        col_workflow_1 = None
+        col_workflow_2 = None
+        for col in df.columns:
+            for pattern in possible_w1_cols:
+                if col == pattern:
+                    col_workflow_1 = col
+                    break
+            for pattern in possible_w2_cols:
+                if col == pattern:
+                    col_workflow_2 = col
+                    break
+        
+        # 如果没有找到，尝试从列名中推断（包含"回答"的列）
+        if not col_workflow_1 or not col_workflow_2:
+            answer_cols = [col for col in df.columns if "回答" in col or "Answer" in col]
+            # 排序后取前两个（通常工作流1在前）
+            answer_cols = sorted(answer_cols)
+            if len(answer_cols) >= 1 and not col_workflow_1:
+                col_workflow_1 = answer_cols[0]
+            if len(answer_cols) >= 2 and not col_workflow_2:
+                col_workflow_2 = answer_cols[1]
+        
+        logger.debug(f"推断的工作流列: workflow_1='{col_workflow_1}', workflow_2='{col_workflow_2}'")
+        
+        for _, row in df.iterrows():
+            # 使用推断的列名或默认值
+            w1_result = ""
+            w2_result = ""
+            if col_workflow_1 and col_workflow_1 in df.columns:
+                w1_result = row.get(col_workflow_1, "")
+            if col_workflow_2 and col_workflow_2 in df.columns:
+                w2_result = row.get(col_workflow_2, "")
+            
+            qa = QuestionAnswer(
+                question=str(row.get("问题", "")),
+                expected_answer="",  # 双工作流模式不需要期望答案
+                original_index=int(row.get("序号", 0)) - 1 if pd.notna(row.get("序号")) else None,
+                workflow_result=w1_result,  # 兼容旧字段
+                workflow_1_result=w1_result,
+                workflow_2_result=w2_result,
+                winner=row.get("推荐答案", ""),
+                comparison_analysis=row.get("质量对比分析", ""),
+                error=row.get("错误信息") if pd.notna(row.get("错误信息")) and row.get("错误信息") != "" else None,
+            )
             results.append(qa)
 
         return results
@@ -570,6 +668,7 @@ class WorkflowBatchProcessor:
         根据配置的模式选择处理逻辑：
         - standard: 标准问答模式
         - rag_eval: RAG 语义评测模式
+        - dual_workflow_compare: 双工作流对比评测模式
 
         Args:
             excel_path: Excel文件路径
@@ -590,17 +689,22 @@ class WorkflowBatchProcessor:
         df = self.load_excel(excel_path)
 
         # 根据配置的模式选择处理逻辑
-        if self.execution_mode_config and self.execution_mode_config.mode == "rag_eval":
+        mode = "standard"
+        if self.execution_mode_config:
+            mode = self.execution_mode_config.mode
+
+        if mode == "rag_eval":
             print(f"使用 RAG 语义评测模式 (并发数: {self.config.max_workers})")
             return await self._process_excel_rag_eval_mode(
                 df, start_row, end_row, delay, output_path
             )
-        else:
-            # 默认使用 standard 模式（兼容旧逻辑）
-            mode = "standard"
-            if self.execution_mode_config:
-                mode = self.execution_mode_config.mode
-            print(f"使用 {mode} 模式 (并发数: {self.config.max_workers})")
+        elif mode == "dual_workflow_compare":
+            print(f"使用双工作流对比评测模式 (并发数: {self.config.max_workers})")
+            return await self._process_excel_dual_workflow_mode(
+                df, start_row, end_row, delay, output_path
+            )
+        else:  # standard
+            print(f"使用 standard 模式 (并发数: {self.config.max_workers})")
             return await self._process_excel_standard_mode(
                 df,
                 question_column,
@@ -826,7 +930,7 @@ class WorkflowBatchProcessor:
 
     def calculate_statistics(self, results: List[QuestionAnswer]) -> Dict[str, Any]:
         """
-        计算统计信息（排除异常模式）
+        计算统计信息（根据模式选择计算方式）
 
         Args:
             results: QuestionAnswer列表
@@ -840,6 +944,16 @@ class WorkflowBatchProcessor:
         if total == 0:
             return {}
 
+        # 判断当前模式
+        mode = "standard"
+        if self.execution_mode_config:
+            mode = self.execution_mode_config.mode
+
+        # 双工作流模式使用专门的统计方法
+        if mode == "dual_workflow_compare":
+            return self._calculate_dual_workflow_stats(results)
+
+        # 其他模式使用原有逻辑
         # 只统计参与评测的样本
         evaluated_results = [r for r in results if r.is_evaluated]
         evaluated_count = len(evaluated_results)
@@ -897,6 +1011,76 @@ class WorkflowBatchProcessor:
 
         return statistics
 
+
+    def _calculate_dual_workflow_stats(self, results: List[QuestionAnswer]) -> Dict[str, Any]:
+        """
+        计算双工作流对比评测统计信息（三方对比：LLM1 vs LLM2 vs History）
+
+        Args:
+            results: QuestionAnswer列表
+
+        Returns:
+            统计信息字典
+        """
+        total = len(results)
+        if total == 0:
+            return {}
+
+        # 只统计没有错误的结果
+        valid_results = [qa for qa in results if qa.error is None]
+        valid_count = len(valid_results)
+
+        if valid_count == 0:
+            return {
+                "total": total,
+                "llm1_wins": 0,
+                "llm2_wins": 0,
+                "history_wins": 0,
+                "ties": 0,
+                "llm1_win_rate": 0.0,
+                "llm2_win_rate": 0.0,
+                "history_win_rate": 0.0,
+            }
+
+        # 统计获胜次数（只统计有效结果）
+        llm1_wins = 0
+        llm2_wins = 0
+        history_wins = 0
+        ties = 0
+
+        for qa in valid_results:
+            # 优先从 dual_workflow_eval 获取 winner
+            if qa.dual_workflow_eval:
+                winner = qa.dual_workflow_eval.winner
+            else:
+                winner = qa.winner or ""
+
+            # 兼容新旧格式
+            if winner in ("llm1", "workflow_1"):
+                llm1_wins += 1
+            elif winner in ("llm2", "workflow_2"):
+                llm2_wins += 1
+            elif winner == "history":
+                history_wins += 1
+            else:  # tie 或其他
+                ties += 1
+
+        # 计算获胜率（基于有效结果）
+        llm1_win_rate = llm1_wins / valid_count
+        llm2_win_rate = llm2_wins / valid_count
+        history_win_rate = history_wins / valid_count
+
+        return {
+            "total": total,
+            "llm1_wins": llm1_wins,
+            "llm2_wins": llm2_wins,
+            "history_wins": history_wins,
+            "ties": ties,
+            "llm1_win_rate": llm1_win_rate,
+            "llm2_win_rate": llm2_win_rate,
+            "history_win_rate": history_win_rate,
+        }
+
     def save_results(
         self,
         results: List[QuestionAnswer],
@@ -914,13 +1098,14 @@ class WorkflowBatchProcessor:
         from obd.models import AnswerCategory
 
         # 判断当前模式
-        is_rag_eval_mode = (
-            self.execution_mode_config and
-            self.execution_mode_config.mode == "rag_eval"
-        )
+        mode = "standard"
+        if self.execution_mode_config:
+            mode = self.execution_mode_config.mode
 
-        if is_rag_eval_mode:
+        if mode == "rag_eval":
             self._save_results_rag_eval(results, statistics, output_path)
+        elif mode == "dual_workflow_compare":
+            self._save_results_dual_workflow(results, statistics, output_path)
         else:
             self._save_results_standard(results, statistics, output_path)
 
@@ -1086,6 +1271,103 @@ class WorkflowBatchProcessor:
             stats_df.to_excel(writer, sheet_name="统计信息", index=False)
 
         print(f"\nRAG 评测结果已保存到: {output_path}")
+
+
+    def _save_results_dual_workflow(
+        self,
+        results: List[QuestionAnswer],
+        statistics: Dict[str, Any],
+        output_path: str
+    ):
+        """保存双工作流对比评测模式结果（三方对比：LLM1 vs LLM2 vs History）"""
+        label_1 = self.dual_workflow_config.label_1 if self.dual_workflow_config else "LLM1"
+        label_2 = self.dual_workflow_config.label_2 if self.dual_workflow_config else "LLM2"
+        label_history = self.dual_workflow_config.label_history if self.dual_workflow_config else "历史回答"
+
+        # 转换为DataFrame
+        data = []
+        for qa in results:
+            display_idx = (qa.original_index + 1) if qa.original_index is not None else len(data) + 1
+
+            # 获取评测结果详情
+            eval_result = qa.dual_workflow_eval
+            if eval_result:
+                # 映射 winner 值
+                winner_raw = eval_result.winner
+                if winner_raw == "llm1":
+                    winner_display = label_1
+                elif winner_raw == "llm2":
+                    winner_display = label_2
+                elif winner_raw == "history":
+                    winner_display = label_history
+                else:
+                    winner_display = "平局" if winner_raw == "tie" else winner_raw
+
+                confidence = eval_result.confidence
+                overall_analysis = eval_result.overall_analysis
+                llm1_comment = eval_result.llm1_comment
+                llm2_comment = eval_result.llm2_comment
+                history_comment = eval_result.history_comment
+                recommendation = eval_result.recommendation
+            else:
+                winner_display = qa.winner or ""
+                # 降级处理：尝试从旧格式 winner 映射
+                if winner_display == "workflow_1":
+                    winner_display = label_1
+                elif winner_display == "workflow_2":
+                    winner_display = label_2
+                confidence = ""
+                overall_analysis = qa.comparison_analysis or ""
+                llm1_comment = ""
+                llm2_comment = ""
+                history_comment = ""
+                recommendation = ""
+
+            data.append({
+                "序号": display_idx,
+                "问题": qa.question,
+                "召回片段": qa.rerank_sources or "",
+                "历史回答": qa.history_answer or "",
+                f"{label_1}回答": qa.workflow_1_result or "",
+                f"{label_2}回答": qa.workflow_2_result or "",
+                "推荐答案": winner_display,
+                "置信度": confidence,
+                "总体分析": overall_analysis,
+                f"{label_1}评价": llm1_comment,
+                f"{label_2}评价": llm2_comment,
+                f"{label_history}评价": history_comment,
+                "推荐理由": recommendation,
+                "错误信息": qa.error or ""
+            })
+
+        # 确保按序号排序
+        df = pd.DataFrame(data)
+        if "序号" in df.columns:
+            df = df.sort_values("序号")
+
+        # 保存Excel
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name="双工作流对比结果", index=False)
+
+            # 添加统计信息sheet
+            stats_data = []
+            stats_data.append(["总数量", statistics.get("total", 0)])
+            stats_data.append(["", ""])  # 分隔行
+            stats_data.append(["--- 获胜统计 ---", ""])
+            stats_data.append([f"{label_1}获胜次数", statistics.get("llm1_wins", 0)])
+            stats_data.append([f"{label_2}获胜次数", statistics.get("llm2_wins", 0)])
+            stats_data.append([f"{label_history}获胜次数", statistics.get("history_wins", 0)])
+            stats_data.append(["平局次数", statistics.get("ties", 0)])
+            stats_data.append(["", ""])  # 分隔行
+            stats_data.append(["--- 获胜率 ---", ""])
+            stats_data.append([f"{label_1}获胜率", f"{statistics.get('llm1_win_rate', 0):.2%}"])
+            stats_data.append([f"{label_2}获胜率", f"{statistics.get('llm2_win_rate', 0):.2%}"])
+            stats_data.append([f"{label_history}获胜率", f"{statistics.get('history_win_rate', 0):.2%}"])
+
+            stats_df = pd.DataFrame(stats_data, columns=["指标", "数值"])
+            stats_df.to_excel(writer, sheet_name="统计信息", index=False)
+
+        print(f"\n双工作流对比评测结果已保存到: {output_path}")
 
 
     async def _process_excel_standard_mode(
@@ -1469,3 +1751,341 @@ class WorkflowBatchProcessor:
             error_msg = f"调用 Dify API 失败: {str(e)}"
             logger.error(error_msg)
             return error_msg
+
+
+    async def _call_dify_api_dual(
+        self,
+        question: str
+    ):
+        """
+        调用单一 Dify 工作流，解析双模型输出
+
+        使用 dual_workflow_config.api_key（单一）
+        返回包含两个模型输出的解析结果
+
+        Args:
+            question: 问题文本
+
+        Returns:
+            DualModelResponseParts: 解析后的双模型响应
+        """
+        from obd.utils.dual_model_parser import DualModelResponseParser
+        from obd.models import DualModelResponseParts
+
+        try:
+            # 准备输入参数
+            inputs = {self.config.input_variable_name: question}
+
+            # 创建临时配置（使用单一 api_key）
+            temp_config = WorkflowConfig(
+                api_key=self.dual_workflow_config.api_key,
+                base_url=self.dual_workflow_config.base_url,
+                response_mode=self.dual_workflow_config.response_mode,
+                timeout=self.dual_workflow_config.timeout
+            )
+
+            # 创建临时客户端
+            temp_client = DifyWorkflowClient(temp_config)
+
+            # 调用 Dify API
+            result = await temp_client.execute_workflow(
+                inputs=inputs,
+                user=self.config.user,
+                workflow_id=self.dual_workflow_config.workflow_id
+            )
+
+            # 调试日志：记录完整 API 响应结构
+            logger.debug(f"[双工作流] API 响应类型: {type(result)}")
+            logger.debug(
+                f"[双工作流] API 响应键: "
+                f"{result.keys() if isinstance(result, dict) else 'N/A'}"
+            )
+
+            # 提取原始响应
+            raw_response = ""
+
+            # 处理流式响应
+            if isinstance(result, dict):
+                # 检查是否有 data 字段（流式响应标志）
+                if "data" in result and isinstance(result["data"], list):
+                    logger.debug(f"[双工作流] 检测到流式响应，data 条目数: {len(result['data'])}")
+                    # 流式响应：合并所有数据块的 answer 字段
+                    raw_response = "\n".join(
+                        item.get("answer", "") for item in result["data"] if item.get("answer")
+                    )
+                    logger.debug(f"[双工作流] 合并后响应长度: {len(raw_response)}")
+                else:
+                    # 阻塞响应：直接提取
+                    raw_response = result.get(self.config.output_variable_name, "")
+                    logger.debug(
+                        f"[双工作流] 阻塞响应，输出变量: {self.config.output_variable_name}"
+                    )
+            else:
+                raw_response = str(result)
+
+            # 调试日志：记录原始响应摘要
+            logger.debug(f"[双工作流] 原始响应长度: {len(raw_response)}")
+            logger.debug(f"[双工作流] 原始响应前500字符: {raw_response[:500]}")
+
+            # 解析双模型输出
+            parsed = DualModelResponseParser.parse(raw_response)
+
+            # 调试日志：记录解析结果状态
+            logger.debug(f"[双工作流] 解析状态: is_valid_format={parsed.is_valid_format}")
+            if not parsed.is_valid_format:
+                logger.warning(
+                    f"[双工作流] 解析失败，"
+                    f"LLM1长度={len(parsed.llm1_output)}, LLM2长度={len(parsed.llm2_output)}"
+                )
+
+            return parsed
+
+        except Exception as e:
+            error_msg = f"调用 Dify API 失败: {str(e)}"
+            logger.error(error_msg)
+            # 返回一个包含错误信息的 fallback 结果
+            return DualModelResponseParts(
+                question=question,
+                rerank_sources="",
+                llm1_output=error_msg,
+                llm2_output="",
+                is_valid_format=False
+            )
+
+
+    async def _process_excel_dual_workflow_mode(
+        self,
+        df: pd.DataFrame,
+        start_row: int = 0,
+        end_row: Optional[int] = None,
+        delay: float = 0.5,
+        output_path: Optional[str] = None
+    ) -> List[QuestionAnswer]:
+        """
+        双工作流对比评测模式处理逻辑
+
+        该模式会：
+        1. 对每个问题并发调用两条工作流
+        2. 使用 LLM 对比两个答案的质量
+        3. 输出结构化的对比评测结果
+
+        Args:
+            df: Excel 数据框
+            start_row: 起始行（0-based）
+            end_row: 结束行（不包含）
+            delay: 请求间隔（秒）
+            output_path: 输出文件路径
+
+        Returns:
+            QuestionAnswer 列表
+        """
+        schema = self.dual_workflow_schema_config
+        if not schema:
+            schema = DualWorkflowSchemaConfig()
+
+        # 验证必需列
+        required_columns = [schema.col_question]
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(
+                f"双工作流对比评测模式缺少必需列: {', '.join(missing_columns)}\n"
+                f"请检查 Excel 文件或配置文件中的 [SCHEMA_DUAL_WORKFLOW] 设置。"
+            )
+
+        total_rows = len(df)
+        if end_row is None or end_row > total_rows:
+            end_row = total_rows
+
+        print(f"共 {total_rows} 行，处理第 {start_row} 行到第 {end_row-1} 行")
+        print("-" * 60)
+
+        results = []
+        processed_indices = set()
+
+        # 加载现有结果实现断点续传
+        if output_path and os.path.exists(output_path):
+            existing_results = self._load_results_from_excel(output_path)
+            if existing_results:
+                results.extend(existing_results)
+                processed_indices = {r.original_index for r in existing_results if r.original_index is not None}
+                print(f"检测到断点：已从现有结果中加载了 {len(existing_results)} 条已处理记录。")
+
+        # 确定真正需要处理的行
+        remaining_indices = [i for i in range(start_row, end_row) if i not in processed_indices]
+
+        if not remaining_indices:
+            print("所有指定范围内的记录已在之前处理完成。")
+            return results
+
+        print(f"还需处理 {len(remaining_indices)} 条新记录")
+
+        # 创建信号量
+        semaphore = asyncio.Semaphore(self.config.max_workers)
+
+        # 如果有输出路径，使用队列+后台保存模式
+        if output_path:
+            result_queue: 'asyncio.Queue[Optional[QuestionAnswer]]' = asyncio.Queue()
+            stop_saver_event = asyncio.Event()
+
+            # 启动后台保存任务
+            saver_task = asyncio.create_task(
+                self._results_saver(result_queue, results, output_path, stop_saver_event)
+            )
+
+            async def run_task(idx):
+                row = df.iloc[idx]
+                try:
+                    question = str(row[schema.col_question])
+
+                    print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
+
+                    # 异步操作 - 使用信号量保护
+                    async with semaphore:
+                        # 单次 API 调用 + 解析双模型输出
+                        parts = await self._call_dify_api_dual(question)
+
+                        # 读取历史回答
+                        history_answer = None
+                        if schema.col_history and schema.col_history in df.columns:
+                            history_val = row.get(schema.col_history)
+                            if pd.notna(history_val):
+                                history_answer = str(history_val)
+
+                        # 三方对比评测
+                        eval_result = None
+                        if self.dual_workflow_comparator:
+                            eval_result = await self.dual_workflow_comparator.compare_answers(
+                                question=question,
+                                llm1_answer=parts.llm1_output,
+                                llm2_answer=parts.llm2_output,
+                                history_answer=history_answer,
+                                rerank_sources=parts.rerank_sources,
+                                label_1=self.dual_workflow_config.label_1,
+                                label_2=self.dual_workflow_config.label_2,
+                                label_history=self.dual_workflow_config.label_history,
+                                question_index=idx
+                            )
+
+                    # 创建 QuestionAnswer 对象
+                    qa = QuestionAnswer(
+                        question=question,
+                        expected_answer="",  # 双工作流模式不需要期望答案
+                        original_index=idx,
+                        workflow_result=parts.llm1_output,  # 保存 LLM1 结果作为主结果
+                        workflow_1_result=parts.llm1_output,  # 兼容保留
+                        workflow_2_result=parts.llm2_output,  # 兼容保留
+                        rerank_sources=parts.rerank_sources if parts.is_valid_format else None,
+                        history_answer=history_answer,
+                        winner=eval_result.winner if eval_result else None,
+                        comparison_analysis=eval_result.overall_analysis if eval_result else None,
+                        dual_workflow_eval=eval_result
+                    )
+
+                    # 将结果放入队列
+                    await result_queue.put(qa)
+                    return qa
+
+                except Exception as e:
+                    logger.error(f"处理第 {idx} 行时出错: {str(e)}")
+                    qa = QuestionAnswer(
+                        question=row.get(schema.col_question, ""),
+                        expected_answer="",
+                        original_index=idx,
+                        error=str(e)
+                    )
+                    await result_queue.put(qa)
+                    return qa
+
+            # 并发执行
+            tasks = [run_task(idx) for idx in remaining_indices]
+            await asyncio.gather(*tasks)
+
+            # 等待所有结果都被保存
+            await result_queue.join()
+
+            # 停止后台保存任务
+            stop_saver_event.set()
+
+            # 等待保存任务完成
+            try:
+                await asyncio.wait_for(saver_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                saver_task.cancel()
+                try:
+                    await saver_task
+                except asyncio.CancelledError:
+                    pass
+        else:
+            # 无输出路径时，直接使用锁保护 results 列表
+            async def run_task_no_save(idx):
+                row = df.iloc[idx]
+                try:
+                    question = str(row[schema.col_question])
+
+                    print(f"[{idx+1}/{total_rows}] 处理问题: {question[:50]}...")
+
+                    # 异步操作 - 使用信号量保护
+                    async with semaphore:
+                        # 单次 API 调用 + 解析双模型输出
+                        parts = await self._call_dify_api_dual(question)
+
+                        # 读取历史回答
+                        history_answer = None
+                        if schema.col_history and schema.col_history in df.columns:
+                            history_val = row.get(schema.col_history)
+                            if pd.notna(history_val):
+                                history_answer = str(history_val)
+
+                        # 三方对比评测
+                        eval_result = None
+                        if self.dual_workflow_comparator:
+                            eval_result = await self.dual_workflow_comparator.compare_answers(
+                                question=question,
+                                llm1_answer=parts.llm1_output,
+                                llm2_answer=parts.llm2_output,
+                                history_answer=history_answer,
+                                rerank_sources=parts.rerank_sources,
+                                label_1=self.dual_workflow_config.label_1,
+                                label_2=self.dual_workflow_config.label_2,
+                                label_history=self.dual_workflow_config.label_history,
+                                question_index=idx
+                            )
+
+                    # 创建 QuestionAnswer 对象
+                    qa = QuestionAnswer(
+                        question=question,
+                        expected_answer="",  # 双工作流模式不需要期望答案
+                        original_index=idx,
+                        workflow_result=parts.llm1_output,  # 保存 LLM1 结果作为主结果
+                        workflow_1_result=parts.llm1_output,  # 兼容保留
+                        workflow_2_result=parts.llm2_output,  # 兼容保留
+                        rerank_sources=parts.rerank_sources if parts.is_valid_format else None,
+                        history_answer=history_answer,
+                        winner=eval_result.winner if eval_result else None,
+                        comparison_analysis=eval_result.overall_analysis if eval_result else None,
+                        dual_workflow_eval=eval_result
+                    )
+
+                    # 使用锁保护 results 列表
+                    async with self._save_lock:
+                        results.append(qa)
+                    return qa
+
+                except Exception as e:
+                    logger.error(f"处理第 {idx} 行时出错: {str(e)}")
+                    qa = QuestionAnswer(
+                        question=row.get(schema.col_question, ""),
+                        expected_answer="",
+                        original_index=idx,
+                        error=str(e)
+                    )
+                    async with self._save_lock:
+                        results.append(qa)
+                    return qa
+
+            # 并发执行
+            tasks = [run_task_no_save(idx) for idx in remaining_indices]
+            await asyncio.gather(*tasks)
+
+        # 排序并返回最终结果
+        return sorted(results, key=lambda x: x.original_index if x.original_index is not None else 0)

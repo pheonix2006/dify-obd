@@ -7,8 +7,8 @@ import os
 os.environ["NO_PROXY"] = "localhost,127.0.0.1" + ("," + os.environ.get("NO_PROXY", "")) if os.environ.get("NO_PROXY") else "localhost,127.0.0.1"
 
 # 配置参数 (参考 config.ini)
-API_KEY = "app-z4xFEhXMeemCQQbC5mcymxX9"
-BASE_URL = "http://localhost:8088/v1"
+API_KEY = "app-uM3GeD5AoqFgtuk1eB450oRo"
+BASE_URL = "http://localhost/v1"
 USER_ID = "test_user_001"
 
 
