@@ -110,7 +110,7 @@ class WorkflowBatchProcessor:
         """从现有的Excel文件中加载已处理的结果"""
         if not os.path.exists(output_path):
             return []
-        
+
         try:
             import pandas as pd
 
@@ -122,10 +122,10 @@ class WorkflowBatchProcessor:
             # 按优先级检测 sheet 名称
             if "RAG 评测结果" in xl_file.sheet_names:
                 sheet_name = "RAG 评测结果"
-                detected_mode = "RAG 评测"
+                detected_mode = "RAG"
             elif "处理结果" in xl_file.sheet_names:
                 sheet_name = "处理结果"
-                detected_mode = "标准评测"
+                detected_mode = "STANDARD"
             else:
                 logger.warning(
                     f"输出文件中未找到预期的结果 sheet，"
@@ -135,50 +135,132 @@ class WorkflowBatchProcessor:
 
             logger.info(f"检测到 {detected_mode} 模式的结果文件，正在加载...")
             df = pd.read_excel(output_path, sheet_name=sheet_name)
-            results = []
-            for _, row in df.iterrows():
-                # 尝试解析 IS_CORRECT
-                is_correct = None
-                if row.get("IS_CORRECT") == "✓":
-                    is_correct = True
-                elif row.get("IS_CORRECT") == "✗":
-                    is_correct = False
-                
-                # 尝试还原 4级分类
-                llm_category = None
-                category_label = row.get("4级分类")
-                from obd.models import AnswerCategory
-                for cat in AnswerCategory:
-                    if cat.label == category_label:
-                        llm_category = cat.value
-                        break
-                
-                qa = QuestionAnswer(
-                    question=str(row.get("问题", "")),
-                    expected_answer=str(row.get("期望答案", "")),
-                    original_index=int(row.get("序号", 0)) - 1 if pd.notna(row.get("序号")) else None,
-                    workflow_result=row.get("MODEL_OUTPUT", ""),
-                    is_correct=is_correct,
-                    match_type=row.get("匹配类型", ""),
-                    workflow_run_id=row.get("工作流运行ID", ""),
-                    error=row.get("错误信息") if pd.notna(row.get("错误信息")) and row.get("错误信息") != "" else None,
-                    knowledge_base=row.get("知识库", ""),
-                    model_output=row.get("MODEL_OUTPUT", ""),
-                    final_display=row.get("FINAL_DISPLAY", ""),
-                    is_evaluated=True if row.get("是否评测") == "是" else False,
-                    used_api_key=row.get("USED_API_KEY", ""),
-                )
-                qa.llm_category = llm_category
-                qa.llm_analysis = row.get("LLM 评测分析", "N/A" if row.get("LLM 评测分析") == "N/A" else row.get("LLM 评测分析"))
-                qa.missing_info = row.get("缺失信息", "")
-                
-                results.append(qa)
-            return results
+
+            # 根据检测到的模式调用对应的加载方法
+            if detected_mode == "RAG":
+                return self._load_rag_results_from_df(df)
+            else:
+                return self._load_standard_results_from_df(df)
+
         except Exception as e:
             logger.warning(f"读取现有结果文件失败: {e}")
             import traceback
             traceback.print_exc()
             return []
+
+    def _load_rag_results_from_df(self, df: 'pd.DataFrame') -> List[QuestionAnswer]:
+        """从 DataFrame 加载 RAG 评测结果"""
+        from obd.models import AnswerCategory
+
+        results = []
+        for _, row in df.iterrows():
+            # 解析是否正确
+            is_correct = None
+            correct_val = row.get("是否正确")
+            if pd.notna(correct_val):
+                if correct_val == "✓":
+                    is_correct = True
+                elif correct_val == "✗":
+                    is_correct = False
+
+            # 解析 4级分类
+            llm_category = None
+            category_label = row.get("4级分类")
+            if pd.notna(category_label) and category_label != "N/A":
+                for cat in AnswerCategory:
+                    if cat.label == category_label:
+                        llm_category = cat.value
+                        break
+
+            # 解析 IS_RAG_FORMAT
+            is_rag_format = False
+            rag_format_val = row.get("IS_RAG_FORMAT")
+            if pd.notna(rag_format_val) and rag_format_val == "是":
+                is_rag_format = True
+
+            qa = QuestionAnswer(
+                question=str(row.get("问题", "")),
+                expected_answer="",  # RAG 模式不需要
+                original_index=int(row.get("序号", 0)) - 1 if pd.notna(row.get("序号")) else None,
+                workflow_result=row.get("实际回答", ""),
+                is_correct=is_correct,
+                match_type="",
+                error=row.get("错误信息") if pd.notna(row.get("错误信息")) and row.get("错误信息") != "" else None,
+            )
+
+            # RAG 特有字段恢复
+            extracted_val = row.get("EXTRACTED_QUESTION", "")
+            qa.extracted_question = extracted_val if pd.notna(extracted_val) else None
+            rerank_val = row.get("RERANK_SOURCES", "")
+            qa.rerank_sources = rerank_val if pd.notna(rerank_val) else None
+            llm_ans_val = row.get("LLM_ANSWER", "")
+            qa.llm_answer = llm_ans_val if pd.notna(llm_ans_val) else None
+            qa.is_rag_format = is_rag_format
+            scope_val = row.get("评测范围", "")
+            qa.scope = scope_val if pd.notna(scope_val) else None
+            ref_val = row.get("上一版回答", "")
+            qa.ref_answer = ref_val if pd.notna(ref_val) else None
+            history_val = row.get("历史评价", "")
+            qa.history_eval = history_val if pd.notna(history_val) else None
+            improvement_val = row.get("改进分析", "N/A")
+            qa.improvement_analysis = improvement_val if pd.notna(improvement_val) else None
+            important_val = row.get("重要信息识别", "")
+            qa.important_info = important_val if pd.notna(important_val) else None
+
+            # 通用字段
+            qa.llm_category = llm_category
+            qa.llm_analysis = row.get("LLM 评测分析", "N/A")
+            qa.missing_info = row.get("缺失信息", "")
+
+            results.append(qa)
+
+        return results
+
+    def _load_standard_results_from_df(self, df: 'pd.DataFrame') -> List[QuestionAnswer]:
+        """从 DataFrame 加载标准评测结果"""
+        from obd.models import AnswerCategory
+
+        results = []
+        for _, row in df.iterrows():
+            # 尝试解析 IS_CORRECT
+            is_correct = None
+            if row.get("IS_CORRECT") == "✓":
+                is_correct = True
+            elif row.get("IS_CORRECT") == "✗":
+                is_correct = False
+
+            # 尝试还原 4级分类
+            llm_category = None
+            category_label = row.get("4级分类")
+            if pd.notna(category_label):
+                for cat in AnswerCategory:
+                    if cat.label == category_label:
+                        llm_category = cat.value
+                        break
+
+            qa = QuestionAnswer(
+                question=str(row.get("问题", "")),
+                expected_answer=str(row.get("期望答案", "")),
+                original_index=int(row.get("序号", 0)) - 1 if pd.notna(row.get("序号")) else None,
+                workflow_result=row.get("MODEL_OUTPUT", ""),
+                is_correct=is_correct,
+                match_type=row.get("匹配类型", ""),
+                workflow_run_id=row.get("工作流运行ID", ""),
+                error=row.get("错误信息") if pd.notna(row.get("错误信息")) and row.get("错误信息") != "" else None,
+                knowledge_base=row.get("知识库", ""),
+                model_output=row.get("MODEL_OUTPUT", ""),
+                final_display=row.get("FINAL_DISPLAY", ""),
+                is_evaluated=True if row.get("是否评测") == "是" else False,
+                used_api_key=row.get("USED_API_KEY", ""),
+            )
+            qa.llm_category = llm_category
+            llm_analysis_val = row.get("LLM 评测分析", "N/A")
+            qa.llm_analysis = "N/A" if llm_analysis_val == "N/A" else llm_analysis_val
+            qa.missing_info = row.get("缺失信息", "")
+
+            results.append(qa)
+
+        return results
 
     async def _save_incremental_all(self, results: List[QuestionAnswer], output_path: str):
         """增量保存所有当前结果"""
