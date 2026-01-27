@@ -97,6 +97,59 @@ class TestLLMComparator:
         result = LLMComparator._parse_llm_response(content)
         assert result.category == "completely_wrong"  # 默认值
 
+    def test_parse_llm_response_new_format_no_hashtags(self):
+        """测试解析新版无井号格式的响应（如日志中出现的情况）"""
+        content = """分类：fully_correct
+
+召回质量评估：  
+- 信息1：内容1
+- 信息2：内容2
+
+基于性分析：  
+- 事实1：内容3
+- 事实2：内容4
+
+准确性分析：  
+- 准确点1
+- 准确点2
+
+完整性分析：
+- 完整点1
+
+总体判断：
+- 最终结论
+"""
+        result = LLMComparator._parse_llm_response(content)
+        assert result.category == "fully_correct"
+        assert result.retrieval_quality is not None
+        assert "信息1：内容1" in result.retrieval_quality
+        assert result.basis_analysis is not None
+        assert "事实1：内容3" in result.basis_analysis
+        assert result.accuracy_analysis is not None
+        assert "准确点1" in result.accuracy_analysis
+        assert result.completeness_analysis is not None
+        assert "完整点1" in result.completeness_analysis
+        assert result.overall_judgment is not None
+        assert "最终结论" in result.overall_judgment
+
+    def test_parse_llm_response_mixed_format(self):
+        """测试解析 mixed 格式（井号与普通标题混合）"""
+        content = """分类：fully_correct
+
+### 召回质量评估
+井号格式内容
+
+基于性分析：
+冒号格式内容
+
+### 准确性分析
+井号格式内容2
+"""
+        result = LLMComparator._parse_llm_response(content)
+        assert result.retrieval_quality == "井号格式内容"
+        assert result.basis_analysis == "冒号格式内容"
+        assert result.accuracy_analysis == "井号格式内容2"
+
     def test_parse_llm_response_missing_fields(self):
         """测试解析缺少字段的响应（无法解析新格式时返回原始内容）"""
         content = "分析：只有分析内容"

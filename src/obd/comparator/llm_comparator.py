@@ -148,15 +148,16 @@ class LLMComparator:
         # 1. 尝试标准格式匹配（中文）
         category_match = re.search(r'分类[：:]\s*(\S+)', content)
 
-        # 2. 尝试宽松匹配（支持英文格式和更宽松的分隔符）
+        # 2. 尝试宽松匹配（支持英文格式和更宽松的分隔符，兼容 Markdown 粗体）
         if not category_match:
             category_match = re.search(
-                r'category[：:]\s*(fully_correct|partial_missing|large_missing|completely_wrong)',
+                r'category[：:]\s*\*{0,2}(fully_correct|partial_missing|large_missing|completely_wrong)\*{0,2}',
                 content, re.IGNORECASE
             )
 
         if category_match:
-            category_str = category_match.group(1)
+            # 清理可能的 Markdown 格式符（**）和首尾空格
+            category_str = category_match.group(1).strip('*').strip()
             category = category_map.get(category_str, "completely_wrong")
         else:
             # 3. 降级推断逻辑：基于关键词内容推断分类
@@ -174,47 +175,32 @@ class LLMComparator:
                     f"响应预览: {content[:200]}..."
                 )
 
-        # 提取召回质量评估（新增）
-        retrieval_match = re.search(
-            r'召回质量评估[：:]\s*(.+?)(?=基于性分析|准确性分析|完整性分析|版本对比分析|总体判断|$)',
-            content, re.DOTALL
-        )
-        retrieval_quality = retrieval_match.group(1).strip() if retrieval_match else None
+        # 定义提取节的辅助函数
+        def extract_section(name_pattern, next_patterns=None):
+            if next_patterns is None:
+                next_patterns = [
+                    "基于性", "准确性", "完整性", 
+                    "版本对比", "总体分析", "总体判断", "###", "---"
+                ]
+            
+            # 过滤掉当前的 pattern (包含可能的部分匹配)
+            current_next = [p for p in next_patterns if p not in name_pattern and name_pattern not in p]
+            lookahead = "|".join(current_next)
+            
+            # 匹配当前节的内容
+            # 支持 ### 标题, ## 标题, 标题：, 标题
+            # 增加 (?:\s*分析)? 支持 "版本对比" 或 "版本对比分析"
+            pattern = rf"(?:###?\s*)?{name_pattern}(?:\s*分析)?[：:]?\s*(.+?)(?=\n\s*(?:###?\s*)?(?:{lookahead})|$)"
+            match = re.search(pattern, content, re.DOTALL)
+            return match.group(1).strip() if match else None
 
-        # 提取基于性分析（新增）
-        basis_match = re.search(
-            r'基于性分析[：:]\s*(.+?)(?=准确性分析|完整性分析|版本对比分析|总体判断|$)',
-            content, re.DOTALL
-        )
-        basis_analysis = basis_match.group(1).strip() if basis_match else None
-
-        # 提取准确性分析（新增）
-        accuracy_match = re.search(
-            r'准确性分析[：:]\s*(.+?)(?=完整性分析|版本对比分析|总体判断|$)',
-            content, re.DOTALL
-        )
-        accuracy_analysis = accuracy_match.group(1).strip() if accuracy_match else None
-
-        # 提取完整性分析（新增）
-        completeness_match = re.search(
-            r'完整性分析[：:]\s*(.+?)(?=版本对比分析|总体判断|$)',
-            content, re.DOTALL
-        )
-        completeness_analysis = completeness_match.group(1).strip() if completeness_match else None
-
-        # 提取版本对比分析（新增，可选字段）
-        version_match = re.search(
-            r'版本对比分析[：:]\s*(.+?)(?=总体判断|$)',
-            content, re.DOTALL
-        )
-        version_analysis = version_match.group(1).strip() if version_match else None
-
-        # 提取总体判断（新增）
-        overall_match = re.search(
-            r'总体判断[：:]\s*(.+)',
-            content, re.DOTALL
-        )
-        overall_judgment = overall_match.group(1).strip() if overall_match else None
+        # 提取各维度分析
+        retrieval_quality = extract_section("召回质量评估")
+        basis_analysis = extract_section("基于性")
+        accuracy_analysis = extract_section("准确性")
+        completeness_analysis = extract_section("完整性")
+        version_analysis = extract_section("版本对比")
+        overall_judgment = extract_section("总体(?:判断|分析)", next_patterns=["###", "---"])
 
         # 组合完整分析（用于 Excel "LLM 评测分析" 列）
         analysis_parts = []
@@ -305,19 +291,13 @@ class LLMComparator:
             actual=actual
         )
 
-        # 构建请求 JSON
-        if self.config.api_type == "custom_azure":
-            data = {
-                "model": self.config.model,
-                "input": [{"role": "user", "content": prompt}],
-                "temperature": self.config.temperature
-            }
-        else:
-            data = {
-                "model": self.config.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": self.config.temperature
-            }
+        data = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": self.config.temperature  # 使用配置的温度参数
+        }
 
         try:
             async with httpx.AsyncClient() as client:
@@ -325,27 +305,8 @@ class LLMComparator:
                 response.raise_for_status()
                 result = response.json()
 
-            # 提取回答内容（根据配置的 api_type 优先解析，但保持容错）
-            content = None
-            
-            # 如果配置为 custom_azure，优先看 output
-            if self.config.api_type == "custom_azure":
-                if "output" in result and len(result["output"]) > 0:
-                    output_content = result["output"][0].get("content", [])
-                    if output_content and isinstance(output_content, list):
-                        content = output_content[0].get("text", "").strip()
-            
-            # 如果没拿到，或者配置是 standard，看 choices
-            if not content:
-                if "choices" in result and len(result["choices"]) > 0:
-                    content = result["choices"][0]["message"]["content"].strip()
-                # 最后的兜底容错：如果 standard 模式但在 output 拿到了
-                elif "output" in result and len(result["output"]) > 0:
-                    output_content = result["output"][0].get("content", [])
-                    if output_content and isinstance(output_content, list):
-                        content = output_content[0].get("text", "").strip()
-
-            if content:
+            if "choices" in result and len(result["choices"]) > 0:
+                content = result["choices"][0]["message"]["content"].strip()
                 # 使用结构化解析
                 return self._parse_llm_response(content)
             else:
