@@ -1832,9 +1832,16 @@ class WorkflowBatchProcessor:
 
             # 调试日志：记录解析结果状态
             logger.debug(f"[双工作流] 解析状态: is_valid_format={parsed.is_valid_format}")
+
+            # 召回片段提取状态
+            if parsed.rerank_sources:
+                logger.info(f"[双工作流] 已提取召回片段（长度: {len(parsed.rerank_sources)} 字符）")
+            else:
+                logger.warning("[双工作流] 召回片段为空或未提取到")
+
             if not parsed.is_valid_format:
                 logger.warning(
-                    f"[双工作流] 解析失败，"
+                    f"[双工作流] 解析格式不完整（可能缺少召回片段标记），"
                     f"LLM1长度={len(parsed.llm1_output)}, LLM2长度={len(parsed.llm2_output)}"
                 )
 

@@ -159,6 +159,8 @@ class DualWorkflowComparator:
                     "llm1_answer": llm1_answer,
                     "llm2_answer": llm2_answer,
                     "history_answer": history_answer or "",
+                    # 召回片段
+                    "rerank_sources": rerank_sources or "",
                 }
 
                 record_path = await self.recorder.save_record(
