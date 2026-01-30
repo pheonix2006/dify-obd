@@ -9,6 +9,7 @@
 记录按时间戳分文件夹存储，每个问题一个 JSON 文件。
 """
 
+import asyncio
 import json
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -76,7 +77,7 @@ class EvalRecorder:
         self,
         base_dir: str = DEFAULT_BASE_DIR,
         enabled: bool = True,
-        session_prefix: Optional[str] = None
+        session_prefix: Optional[str] = None,
     ):
         """
         初始化记录器
@@ -121,7 +122,12 @@ class EvalRecorder:
 
         Returns:
             记录文件的完整路径
+
+        Raises:
+            RuntimeError: 如果记录器未启用
         """
+        if self.session_dir is None:
+            raise RuntimeError("EvalRecorder not enabled, session_dir is None")
         filename = f"question_{question_index:06d}.json"
         return self.session_dir / filename
 
@@ -136,7 +142,7 @@ class EvalRecorder:
         question_index: int,
         model: str,
         category: Optional[str] = None,
-        is_correct: Optional[bool] = None
+        is_correct: Optional[bool] = None,
     ) -> Optional[Path]:
         """
         保存单条评测记录（异步）
@@ -170,13 +176,13 @@ class EvalRecorder:
             question_index=question_index,
             model=model,
             category=category,
-            is_correct=is_correct
+            is_correct=is_correct,
         )
 
         file_path = self.get_record_path(question_index)
 
         # 异步写入文件
-        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+        async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(asdict(record), ensure_ascii=False, indent=2))
 
         return file_path
@@ -192,7 +198,7 @@ class EvalRecorder:
         question_index: int,
         model: str,
         category: Optional[str] = None,
-        is_correct: Optional[bool] = None
+        is_correct: Optional[bool] = None,
     ) -> Optional[Path]:
         """
         保存单条评测记录（同步版本）
@@ -228,13 +234,13 @@ class EvalRecorder:
             question_index=question_index,
             model=model,
             category=category,
-            is_correct=is_correct
+            is_correct=is_correct,
         )
 
         file_path = self.get_record_path(question_index)
 
         # 同步写入文件
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump(asdict(record), f, ensure_ascii=False, indent=2)
 
         return file_path
@@ -264,7 +270,7 @@ class EvalRecorder:
                 question_index=record.question_index,
                 model=record.model,
                 category=record.category,
-                is_correct=record.is_correct
+                is_correct=record.is_correct,
             )
             tasks.append(task)
 

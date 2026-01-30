@@ -1,12 +1,12 @@
 """RAG响应解析工具"""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class RAGResponseParts:
     """RAG响应解析结果"""
+
     question: str  # 提取的问题
     rerank_sources: str  # rerank片段（合并）
     llm_answer: str  # LLM生成的答案
@@ -63,38 +63,38 @@ class RAGResponseParser:
             question = answer[:question_idx].strip()
             rerank_start = question_idx + len(cls.QUESTION_MARKER)
             rerank = answer[rerank_start:llm_idx].strip()
-            llm = answer[llm_idx + len(cls.LLM_MARKER):].strip()
+            llm = answer[llm_idx + len(cls.LLM_MARKER) :].strip()
 
             return RAGResponseParts(
                 question=question,
                 rerank_sources=rerank,
                 llm_answer=llm,
-                is_valid_format=True
+                is_valid_format=True,
             )
 
         # 情况2：只有问题分隔符
         if question_idx >= 0:
             question = answer[:question_idx].strip()
-            rerank = answer[question_idx + len(cls.QUESTION_MARKER):].strip()
+            rerank = answer[question_idx + len(cls.QUESTION_MARKER) :].strip()
 
             return RAGResponseParts(
                 question=question,
                 rerank_sources=rerank,
                 llm_answer="",  # 没有LLM答案
-                is_valid_format=True
+                is_valid_format=True,
             )
 
         # 情况3：只有LLM分隔符
         if llm_idx >= 0:
             question = ""  # 没有明确的问题
             rerank = answer[:llm_idx].strip()
-            llm = answer[llm_idx + len(cls.LLM_MARKER):].strip()
+            llm = answer[llm_idx + len(cls.LLM_MARKER) :].strip()
 
             return RAGResponseParts(
                 question=question,
                 rerank_sources=rerank,
                 llm_answer=llm,
-                is_valid_format=True
+                is_valid_format=True,
             )
 
         # 情况4：都没有，当作纯LLM答案
@@ -102,7 +102,7 @@ class RAGResponseParser:
             question="",
             rerank_sources="",
             llm_answer=answer.strip(),
-            is_valid_format=False
+            is_valid_format=False,
         )
 
     @classmethod
@@ -112,5 +112,5 @@ class RAGResponseParser:
             question="",
             rerank_sources="",
             llm_answer=answer if answer else "",
-            is_valid_format=False
+            is_valid_format=False,
         )

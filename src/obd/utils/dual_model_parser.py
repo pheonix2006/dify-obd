@@ -1,7 +1,7 @@
 """双模型响应解析工具"""
 
 import logging
-from typing import Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,31 @@ class DualModelResponseParser:
 
     # 分隔符变体（容错处理）
     QUESTION_MARKERS = ["问题：", "问题:", "问题是：", "问题是:", "Question:"]
-    RERANK_MARKERS = ["rerank后的片段：", "rerank后的片段:", "rerank后的片段是：", "rerank后的片段是:", "召回片段：", "召回片段:"]
-    LLM1_MARKERS = ["经过llm1的结果：", "经过llm1的结果:", "LLM1结果：", "LLM1回答：", "llm1的结果："]
-    LLM2_MARKERS = ["经过llm2的结果：", "经过llm2的结果:", "LLM2结果：", "LLM2回答：", "llm2的结果："]
+    RERANK_MARKERS = [
+        "rerank后的片段：",
+        "rerank后的片段:",
+        "rerank后的片段是：",
+        "rerank后的片段是:",
+        "召回片段：",
+        "召回片段:",
+    ]
+    LLM1_MARKERS = [
+        "经过llm1的结果：",
+        "经过llm1的结果:",
+        "LLM1结果：",
+        "LLM1回答：",
+        "llm1的结果：",
+    ]
+    LLM2_MARKERS = [
+        "经过llm2的结果：",
+        "经过llm2的结果:",
+        "LLM2结果：",
+        "LLM2回答：",
+        "llm2的结果：",
+    ]
 
     @classmethod
-    def parse(cls, response: str) -> "DualModelResponseParts":
+    def parse(cls, response: str) -> "Any":
         """
         解析工作流响应
 
@@ -41,7 +60,6 @@ class DualModelResponseParser:
         Returns:
             DualModelResponseParts: 解析后的各部分内容
         """
-        from obd.models import DualModelResponseParts
 
         if not response:
             return cls._fallback(response)
@@ -52,7 +70,7 @@ class DualModelResponseParser:
             return cls._fallback(response)
 
     @classmethod
-    def _do_parse(cls, response: str) -> "DualModelResponseParts":
+    def _do_parse(cls, response: str) -> "Any":
         """执行解析：按分隔符位置分段"""
         from obd.models import DualModelResponseParts
 
@@ -120,7 +138,9 @@ class DualModelResponseParser:
 
                 # 召回片段提取状态
                 if rerank:
-                    logger.info(f"[双工作流解析器] 已提取召回片段（长度: {len(rerank)} 字符）")
+                    logger.info(
+                        f"[双工作流解析器] 已提取召回片段（长度: {len(rerank)} 字符）"
+                    )
                 else:
                     logger.warning("[双工作流解析器] 召回片段为空")
 
@@ -129,13 +149,20 @@ class DualModelResponseParser:
                     rerank_sources=rerank,
                     llm1_output=llm1,
                     llm2_output=llm2,
-                    is_valid_format=True
+                    is_valid_format=True,
                 )
 
         # 半完整格式：缺少问题标记，但有 rerank、llm1、llm2
         # 处理类似 "你好\nrerank后的片段是：...\n经过llm1的结果：...\n经过llm2的结果：..." 的格式
-        if rerank_idx >= 0 and llm1_idx >= 0 and llm2_idx >= 0 and rerank_idx < llm1_idx < llm2_idx:
-            logger.debug("[双工作流解析器] 半完整格式：无问题标记，但有 rerank、llm1、llm2")
+        if (
+            rerank_idx >= 0
+            and llm1_idx >= 0
+            and llm2_idx >= 0
+            and rerank_idx < llm1_idx < llm2_idx
+        ):
+            logger.debug(
+                "[双工作流解析器] 半完整格式：无问题标记，但有 rerank、llm1、llm2"
+            )
             # 问题从头提取到 rerank 标记
             question = response[:rerank_idx].strip()
             # 提取召回片段
@@ -155,7 +182,9 @@ class DualModelResponseParser:
 
             # 召回片段提取状态
             if rerank:
-                logger.info(f"[双工作流解析器] 已提取召回片段（长度: {len(rerank)} 字符）")
+                logger.info(
+                    f"[双工作流解析器] 已提取召回片段（长度: {len(rerank)} 字符）"
+                )
             else:
                 logger.warning("[双工作流解析器] 召回片段为空")
 
@@ -164,7 +193,7 @@ class DualModelResponseParser:
                 rerank_sources=rerank,
                 llm1_output=llm1,
                 llm2_output=llm2,
-                is_valid_format=True  # 关键内容都解析到了
+                is_valid_format=True,  # 关键内容都解析到了
             )
 
         # 尝试部分格式解析（只有 llm1 和 llm2）
@@ -182,7 +211,7 @@ class DualModelResponseParser:
                 rerank_sources="",
                 llm1_output=llm1,
                 llm2_output=llm2,
-                is_valid_format=False  # 部分格式
+                is_valid_format=False,  # 部分格式
             )
 
         # Fallback
@@ -219,7 +248,11 @@ class DualModelResponseParser:
         # 找到第一个召回标记（在问题之后）
         for marker in cls.RERANK_MARKERS:
             idx = response.find(marker)
-            if idx >= 0 and idx > question_idx and (rerank_idx == -1 or idx < rerank_idx):
+            if (
+                idx >= 0
+                and idx > question_idx
+                and (rerank_idx == -1 or idx < rerank_idx)
+            ):
                 rerank_idx = idx
                 rerank_marker = marker
 
@@ -237,10 +270,19 @@ class DualModelResponseParser:
                 llm2_idx = idx
                 llm2_marker = marker
 
-        return question_idx, rerank_idx, llm1_idx, llm2_idx, question_marker, rerank_marker, llm1_marker, llm2_marker
+        return (
+            question_idx,
+            rerank_idx,
+            llm1_idx,
+            llm2_idx,
+            question_marker,
+            rerank_marker,
+            llm1_marker,
+            llm2_marker,
+        )
 
     @classmethod
-    def _fallback(cls, response: str) -> "DualModelResponseParts":
+    def _fallback(cls, response: str) -> "Any":
         """解析失败时的 fallback
 
         将整个响应作为 llm1_output 返回
@@ -252,5 +294,5 @@ class DualModelResponseParser:
             rerank_sources="",
             llm1_output=response if response else "",
             llm2_output="",
-            is_valid_format=False
+            is_valid_format=False,
         )
