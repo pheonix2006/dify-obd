@@ -31,7 +31,7 @@ def load_config(config_path: str = "config.ini") -> dict:
         包含所有配置的字典
     """
     config = configparser.ConfigParser()
-    config.read(config_path, encoding='utf-8')
+    config.read(config_path, encoding="utf-8")
 
     # 解析工作流映射
     workflow_mapping = {}
@@ -50,15 +50,16 @@ def load_config(config_path: str = "config.ini") -> dict:
         "base_url": config.get("Dify", "base_url"),
         "response_mode": config.get("Dify", "response_mode"),
         "timeout": config.getint("Dify", "timeout"),
-
         # 工作流配置
-        "input_variable_name": config.get("Workflow", "input_variable_name", fallback="query"),
-        "output_variable_name": config.get("Workflow", "output_variable_name", fallback="answer"),
+        "input_variable_name": config.get(
+            "Workflow", "input_variable_name", fallback="query"
+        ),
+        "output_variable_name": config.get(
+            "Workflow", "output_variable_name", fallback="answer"
+        ),
         "max_workers": config.getint("Workflow", "max_workers", fallback=5),
-
         # 工作流映射（用于 Standard 模式的动态路由）
         "workflow_mapping": workflow_mapping,
-
         # 执行模式
         "execution_mode": execution_mode,
     }
@@ -97,7 +98,7 @@ async def call_api_with_routing(
     question: str,
     input_variable_name: str,
     workflow_mapping: Optional[Dict[str, str]] = None,
-    knowledge_base: Optional[str] = None
+    knowledge_base: Optional[str] = None,
 ) -> dict:
     """
     调用 Dify API（支持路由）
@@ -120,8 +121,7 @@ async def call_api_with_routing(
         if standardized_kb not in workflow_mapping:
             available = ", ".join(sorted(workflow_mapping.keys()))
             raise ValueError(
-                f"未找到知识库 '{knowledge_base}' 的配置\n"
-                f"可用知识库: {available}"
+                f"未找到知识库 '{knowledge_base}' 的配置\n" f"可用知识库: {available}"
             )
 
         # 获取特定 API Key
@@ -130,6 +130,7 @@ async def call_api_with_routing(
 
         # 创建临时配置和客户端
         from obd.models import WorkflowConfig
+
         temp_config = WorkflowConfig(
             api_key=api_key,
             base_url=client.config.base_url,
@@ -137,7 +138,7 @@ async def call_api_with_routing(
             timeout=client.config.timeout,
             user=client.config.user,
             input_variable_name=input_variable_name,
-            output_variable_name=client.config.output_variable_name
+            output_variable_name=client.config.output_variable_name,
         )
 
         # 创建临时客户端
@@ -145,8 +146,7 @@ async def call_api_with_routing(
 
         # 调用 API
         result = await temp_client.execute_workflow(
-            inputs={input_variable_name: question},
-            user="debug-user"
+            inputs={input_variable_name: question}, user="debug-user"
         )
 
         # 关闭临时客户端
@@ -156,11 +156,10 @@ async def call_api_with_routing(
 
     # RAG Eval 模式或未指定知识库：使用默认客户端
     if knowledge_base:
-        print(f"  提示: 当前模式不支持路由，使用默认 API Key")
+        print("  提示: 当前模式不支持路由，使用默认 API Key")
 
     result = await client.execute_workflow(
-        inputs={input_variable_name: question},
-        user="debug-user"
+        inputs={input_variable_name: question}, user="debug-user"
     )
 
     return result
@@ -196,7 +195,7 @@ async def main():
     # 加载配置
     try:
         config_data = load_config()
-        print(f"✓ 配置加载成功")
+        print("✓ 配置加载成功")
         print(f"  - API 基础URL: {config_data['base_url']}")
         print(f"  - 响应模式: {config_data['response_mode']}")
         print(f"  - 超时时间: {config_data['timeout']}秒")
@@ -226,8 +225,9 @@ async def main():
 
     # 创建配置对象和客户端（使用默认 API Key）
     # 过滤掉 WorkflowConfig 不接受的参数（如 execution_mode）
-    workflow_config_params = {k: v for k, v in config_data.items()
-                             if k in WorkflowConfig.__dataclass_fields__}
+    workflow_config_params = {
+        k: v for k, v in config_data.items() if k in WorkflowConfig.__dataclass_fields__
+    }
     workflow_config = WorkflowConfig(**workflow_config_params)
     client = DifyWorkflowClient(workflow_config)
 
@@ -250,7 +250,7 @@ async def main():
             break
 
         # 退出检查
-        if user_input.lower() in ['quit', 'exit', 'q']:
+        if user_input.lower() in ["quit", "exit", "q"]:
             print("\n再见!")
             break
 
@@ -259,29 +259,29 @@ async def main():
             continue
 
         # 处理命令
-        if user_input.lower() in ['help', 'h']:
+        if user_input.lower() in ["help", "h"]:
             print_usage_guide(config_data["workflow_mapping"])
             print("-" * 60)
             continue
 
-        if user_input.lower() in ['list', 'l']:
+        if user_input.lower() in ["list", "l"]:
             print("\n可用的知识库:")
             print_available_knowledge_bases(config_data["workflow_mapping"])
             print("-" * 60)
             continue
 
-        if user_input.lower() in ['mode', 'm']:
+        if user_input.lower() in ["mode", "m"]:
             print()
             print_mode_info(config_data)
             if current_knowledge_base:
                 print(f"  当前路由: {current_knowledge_base}")
             else:
-                print(f"  当前路由: 默认 API Key")
+                print("  当前路由: 默认 API Key")
             print("-" * 60)
             continue
 
         # 处理路由切换（仅 Standard 模式支持）
-        if user_input.lower().startswith('kb:'):
+        if user_input.lower().startswith("kb:"):
             if config_data["execution_mode"] != "standard":
                 print("\n⚠ 当前模式不支持路由功能")
                 print(f"  当前模式: {config_data['execution_mode']}")
@@ -292,8 +292,8 @@ async def main():
             kb_name = user_input[3:].strip()
 
             # 切换到默认
-            if kb_name.lower() == 'default':
-                print(f"\n✓ 切换到默认 API Key")
+            if kb_name.lower() == "default":
+                print("\n✓ 切换到默认 API Key")
                 current_knowledge_base = None
                 print("-" * 60)
                 continue
@@ -315,13 +315,13 @@ async def main():
 
         # 调用 API
         question = user_input
-        print(f"\n正在调用 Dify API...")
+        print("\n正在调用 Dify API...")
 
         # 显示路由信息
         if current_knowledge_base:
             print(f"  使用路由: {current_knowledge_base}")
         else:
-            print(f"  使用路由: 默认 API Key")
+            print("  使用路由: 默认 API Key")
 
         try:
             result = await call_api_with_routing(
@@ -329,7 +329,7 @@ async def main():
                 question=question,
                 input_variable_name=config_data["input_variable_name"],
                 workflow_mapping=config_data["workflow_mapping"],
-                knowledge_base=current_knowledge_base
+                knowledge_base=current_knowledge_base,
             )
 
             # 打印结果
@@ -363,4 +363,5 @@ async def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(asyncio.run(main()))
