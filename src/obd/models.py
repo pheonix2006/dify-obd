@@ -28,10 +28,11 @@ __all__ = [
 
 class AnswerCategory(Enum):
     """4级答案分类"""
-    FULLY_CORRECT = "fully_correct"        # 完全正确
-    PARTIAL_MISSING = "partial_missing"      # 部分缺失
-    LARGE_MISSING = "large_missing"          # 大量缺失
-    COMPLETELY_WRONG = "completely_wrong"    # 完全错误
+
+    FULLY_CORRECT = "fully_correct"  # 完全正确
+    PARTIAL_MISSING = "partial_missing"  # 部分缺失
+    LARGE_MISSING = "large_missing"  # 大量缺失
+    COMPLETELY_WRONG = "completely_wrong"  # 完全错误
 
     @property
     def label(self) -> str:
@@ -40,7 +41,7 @@ class AnswerCategory(Enum):
             "fully_correct": "完全正确",
             "partial_missing": "部分缺失",
             "large_missing": "大量缺失",
-            "completely_wrong": "完全错误"
+            "completely_wrong": "完全错误",
         }
         return labels[self.value]
 
@@ -53,6 +54,7 @@ class AnswerCategory(Enum):
 @dataclass
 class WorkflowConfig:
     """工作流配置"""
+
     api_key: str  # Dify API密钥
     base_url: str = "https://api.dify.ai/v1"  # Dify API基础URL
     response_mode: str = "blocking"  # blocking 或 streaming
@@ -61,12 +63,15 @@ class WorkflowConfig:
     user: str = "batch_processor"  # 用户标识
     input_variable_name: str = "query"  # 工作流输入变量名
     output_variable_name: str = "answer"  # 工作流输出变量名
-    workflow_mapping: Dict[str, str] = field(default_factory=dict)  # 知识库名称到API Key的映射表
+    workflow_mapping: Dict[str, str] = field(
+        default_factory=dict
+    )  # 知识库名称到API Key的映射表
 
 
 @dataclass
 class RoutingConfig:
     """路由配置"""
+
     knowledge_base_column: str = "KNOWLEDGE_BASE"  # 知识库列名
     answer_state_column: str = "ANSWER_STATE"  # 评测状态列名
     feedback_answer_column: str = "FEEDBACK_ANSWER"  # 反馈答案列名
@@ -77,6 +82,7 @@ class RoutingConfig:
 @dataclass
 class ExecutionModeConfig:
     """执行模式配置"""
+
     mode: str = "standard"  # standard, rag_eval, dual_workflow_compare
 
     def __post_init__(self):
@@ -84,14 +90,14 @@ class ExecutionModeConfig:
         valid_modes = ["standard", "rag_eval", "dual_workflow_compare"]
         if self.mode not in valid_modes:
             raise ValueError(
-                f"无效的执行模式: {self.mode}\n"
-                f"支持的模式: {', '.join(valid_modes)}"
+                f"无效的执行模式: {self.mode}\n" f"支持的模式: {', '.join(valid_modes)}"
             )
 
 
 @dataclass
 class StandardSchemaConfig:
     """标准模式列配置"""
+
     col_question: str = "Question"
     col_ground_truth: str = "Ground Truth"
     col_knowledge_base: Optional[str] = "KNOWLEDGE_BASE"
@@ -102,6 +108,7 @@ class StandardSchemaConfig:
 @dataclass
 class RAGEvalSchemaConfig:
     """RAG 评测模式列配置"""
+
     col_question: str = "Question"
     col_scope: str = "Scope"
     col_ref_answer: str = "Ref_Answer"
@@ -111,6 +118,7 @@ class RAGEvalSchemaConfig:
 @dataclass
 class DualWorkflowSchemaConfig:
     """双工作流对比评测模式列配置"""
+
     col_question: str = "Question"
     col_history: Optional[str] = None  # 历史回答列（用于三方对比）
 
@@ -118,6 +126,7 @@ class DualWorkflowSchemaConfig:
 @dataclass
 class DualModelResponseParts:
     """双模型响应解析结果（由 DualModelResponseParser 生成）"""
+
     question: str  # 原始问题
     rerank_sources: str  # 召回片段
     llm1_output: str  # LLM1 输出
@@ -128,6 +137,7 @@ class DualModelResponseParts:
 @dataclass
 class DualWorkflowConfig:
     """双工作流配置（单工作流+双模型输出）"""
+
     # 单工作流配置
     api_key: str  # 单一 API Key
     workflow_id: Optional[str] = None
@@ -146,6 +156,7 @@ class DualWorkflowConfig:
 @dataclass
 class DualWorkflowEvalResult:
     """三方对比评测结果（LLM1 vs LLM2 vs History）"""
+
     winner: str  # "llm1", "llm2", "history", "tie"
     confidence: str  # "high", "medium", "low"
 
@@ -167,11 +178,14 @@ class DualWorkflowEvalResult:
 @dataclass
 class LLMEvalConfig:
     """LLM评测配置"""
+
     enabled: bool = False
     api_key: Optional[str] = None
     base_url: str = "https://api.openai.com/v1/chat/completions"  # 完整 URL，不自动拼接
     model: str = "gpt-4o"
-    api_type: str = "standard"  # standard 采用 messages/choices, custom_azure 采用 input/output
+    api_type: str = (
+        "standard"  # standard 采用 messages/choices, custom_azure 采用 input/output
+    )
     prompt_template: Optional[str] = None
     timeout: int = 30
     judgment_mode: str = "detailed"  # detailed/autonomous
@@ -198,6 +212,7 @@ class LLMEvalConfig:
 @dataclass
 class QuestionAnswer:
     """问题-答案对"""
+
     question: str
     expected_answer: str
     original_index: Optional[int] = None  # 原始行索引
@@ -221,9 +236,9 @@ class QuestionAnswer:
     important_info: Optional[str] = None  # 重要信息识别
 
     # RAG 评测模式字段（可选）
-    scope: Optional[str] = None          # 评测范围
-    ref_answer: Optional[str] = None     # 上一版回答
-    history_eval: Optional[str] = None   # 历史评价
+    scope: Optional[str] = None  # 评测范围
+    ref_answer: Optional[str] = None  # 上一版回答
+    history_eval: Optional[str] = None  # 历史评价
     improvement_analysis: Optional[str] = None  # 改进分析（新）
 
     # RAG响应解析字段（新增）

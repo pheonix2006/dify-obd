@@ -186,4 +186,4 @@ tmp/
 
 # Serena LSP and spec-workflow
 .serena/
-.spec-workflow/approvals/
+.spec-workflow/
