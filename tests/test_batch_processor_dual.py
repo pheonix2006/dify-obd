@@ -244,6 +244,7 @@ rerank后的片段：机器学习是AI的一个分支
     def test_load_dual_workflow_results_from_excel(self, processor):
         """测试从 Excel 加载双工作流结果"""
         # 创建模拟 Excel 数据（新格式）
+        # 注意：列名需要与 dual_workflow_config 中的 label 匹配
         data = {
             "序号": [1, 2],
             "问题": ["问题1", "问题2"],
@@ -251,7 +252,7 @@ rerank后的片段：机器学习是AI的一个分支
             "历史回答": ["历史1", "历史2"],
             "LLM1回答": ["回答1", "回答2"],
             "LLM2回答": ["回答1-2", "回答2-2"],
-            "推荐答案": ["LLM1", "LLM2"],
+            "推荐答案": ["llm1", "llm2"],  # 内部值使用小写
             "错误信息": ["", "测试错误"]
         }
         df = pd.DataFrame(data)
@@ -265,7 +266,7 @@ rerank后的片段：机器学习是AI的一个分支
         assert results[0].workflow_2_result == "回答1-2"
         assert results[0].rerank_sources == "片段1"
         assert results[0].history_answer == "历史1"
-        assert results[0].winner == "LLM1"
+        assert results[0].winner == "llm1"  # winner 保持原始值
         assert results[1].error == "测试错误"
 
     def test_calculate_dual_workflow_stats(self, processor):
@@ -390,7 +391,7 @@ rerank后的片段：机器学习是AI的一个分支
         assert df.iloc[0]["问题"] == "问题1"
         # 新增列
         assert df.iloc[0]["召回片段"] == "召回片段1"
-        assert df.iloc[0]["历史回答"] == "历史回答"
+        assert df.iloc[0]["历史回答"] == "历史回答1"  # 实际值
         # 列名根据 dual_workflow_config 的 label 生成
         assert df.iloc[0]["LLM1回答"] == "LLM1回答"  # label_1 = "LLM1"
         assert df.iloc[0]["LLM2回答"] == "LLM2回答"  # label_2 = "LLM2"
@@ -407,7 +408,7 @@ rerank后的片段：机器学习是AI的一个分支
             "历史回答": ["历史1", "历史2"],
             "LLM1回答": ["回答1", "回答2"],
             "LLM2回答": ["回答1-2", "回答2-2"],
-            "推荐答案": ["llm1", "llm2"],
+            "推荐答案": ["llm1", "llm2"],  # 内部值使用小写
             "总体分析": ["分析1", "分析2"],
             "错误信息": ["", "错误"]
         })
