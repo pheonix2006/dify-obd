@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
-from obd.models import LLMEvalConfig, AnswerCategory
+from obd.models import LLMEvalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LLMEvalResult:
     """LLM评测结果"""
+
     is_correct: bool  # 2级分类结果
     category: str  # 4级分类
     analysis: str  # 完整分析
@@ -106,6 +107,7 @@ AUTONOMOUS_PROMPT_TEMPLATE = """你是一个专业的RAG系统评测员。请对
 重要信息识别：[说明哪些信息被判断为重要的]
 """
 
+
 class LLMComparator:
     """基于 LLM 的答案对比分析器"""
 
@@ -142,31 +144,36 @@ class LLMComparator:
             "fully_correct": "fully_correct",
             "partial_missing": "partial_missing",
             "large_missing": "large_missing",
-            "completely_wrong": "completely_wrong"
+            "completely_wrong": "completely_wrong",
         }
 
         # 1. 尝试标准格式匹配（中文）
-        category_match = re.search(r'分类[：:]\s*(\S+)', content)
+        category_match = re.search(r"分类[：:]\s*(\S+)", content)
 
         # 2. 尝试宽松匹配（支持英文格式和更宽松的分隔符，兼容 Markdown 粗体）
         if not category_match:
             category_match = re.search(
-                r'category[：:]\s*\*{0,2}(fully_correct|partial_missing|large_missing|completely_wrong)\*{0,2}',
-                content, re.IGNORECASE
+                r"category[：:]\s*\*{0,2}(fully_correct|partial_missing|large_missing|completely_wrong)\*{0,2}",
+                content,
+                re.IGNORECASE,
             )
 
         if category_match:
             # 清理可能的 Markdown 格式符（**）和首尾空格
-            category_str = category_match.group(1).strip('*').strip()
+            category_str = category_match.group(1).strip("*").strip()
             category = category_map.get(category_str, "completely_wrong")
         else:
             # 3. 降级推断逻辑：基于关键词内容推断分类
             content_lower = content.lower()
             if "完全正确" in content or "fully correct" in content_lower:
                 category = "fully_correct"
-            elif "部分缺失" in content or ("partial" in content_lower and "missing" in content_lower):
+            elif "部分缺失" in content or (
+                "partial" in content_lower and "missing" in content_lower
+            ):
                 category = "partial_missing"
-            elif "大量缺失" in content or ("large" in content_lower and "missing" in content_lower):
+            elif "大量缺失" in content or (
+                "large" in content_lower and "missing" in content_lower
+            ):
                 category = "large_missing"
             else:
                 category = "completely_wrong"
@@ -179,14 +186,24 @@ class LLMComparator:
         def extract_section(name_pattern, next_patterns=None):
             if next_patterns is None:
                 next_patterns = [
-                    "基于性", "准确性", "完整性", 
-                    "版本对比", "总体分析", "总体判断", "###", "---"
+                    "基于性",
+                    "准确性",
+                    "完整性",
+                    "版本对比",
+                    "总体分析",
+                    "总体判断",
+                    "###",
+                    "---",
                 ]
-            
+
             # 过滤掉当前的 pattern (包含可能的部分匹配)
-            current_next = [p for p in next_patterns if p not in name_pattern and name_pattern not in p]
+            current_next = [
+                p
+                for p in next_patterns
+                if p not in name_pattern and name_pattern not in p
+            ]
             lookahead = "|".join(current_next)
-            
+
             # 匹配当前节的内容
             # 支持 ### 标题, ## 标题, 标题：, 标题
             # 增加 (?:\s*分析)? 支持 "版本对比" 或 "版本对比分析"
@@ -200,7 +217,9 @@ class LLMComparator:
         accuracy_analysis = extract_section("准确性")
         completeness_analysis = extract_section("完整性")
         version_analysis = extract_section("版本对比")
-        overall_judgment = extract_section("总体(?:判断|分析)", next_patterns=["###", "---"])
+        overall_judgment = extract_section(
+            "总体(?:判断|分析)", next_patterns=["###", "---"]
+        )
 
         # 组合完整分析（用于 Excel "LLM 评测分析" 列）
         analysis_parts = []
@@ -226,11 +245,9 @@ class LLMComparator:
         # 兼容旧字段：从新格式推断，保持向后兼容
         # 优先尝试从旧格式中提取
         missing_match = re.search(
-            r'缺失信息[：:]\s*(.+?)(?=重要信息识别|$)', content, re.DOTALL
+            r"缺失信息[：:]\s*(.+?)(?=重要信息识别|$)", content, re.DOTALL
         )
-        important_match = re.search(
-            r'重要信息识别[：:]\s*(.+)', content, re.DOTALL
-        )
+        important_match = re.search(r"重要信息识别[：:]\s*(.+)", content, re.DOTALL)
 
         # 如果旧格式不存在，从新格式推断
         if missing_match:
@@ -260,10 +277,12 @@ class LLMComparator:
             accuracy_analysis=accuracy_analysis,
             completeness_analysis=completeness_analysis,
             version_analysis=version_analysis,
-            overall_judgment=overall_judgment
+            overall_judgment=overall_judgment,
         )
 
-    async def evaluate(self, question: str, expected: str, actual: str) -> LLMEvalResult:
+    async def evaluate(
+        self, question: str, expected: str, actual: str
+    ) -> LLMEvalResult:
         """
         调用 LLM 进行评测分析
 
@@ -276,32 +295,30 @@ class LLMComparator:
                 category="completely_wrong",
                 analysis="LLM 评测未启用或未配置 API Key",
                 missing_info=None,
-                important_info=None
+                important_info=None,
             )
 
         url = f"{self.config.base_url.rstrip('/')}"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
+            "Authorization": f"Bearer {self.config.api_key}",
         }
 
         prompt = self.prompt_template.format(
-            question=question,
-            expected=expected,
-            actual=actual
+            question=question, expected=expected, actual=actual
         )
 
         data = {
             "model": self.config.model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": self.config.temperature  # 使用配置的温度参数
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.config.temperature,  # 使用配置的温度参数
         }
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(url, headers=headers, json=data, timeout=self.config.timeout)
+                response = await client.post(
+                    url, headers=headers, json=data, timeout=self.config.timeout
+                )
                 response.raise_for_status()
                 result = response.json()
 
@@ -315,7 +332,7 @@ class LLMComparator:
                     category="completely_wrong",
                     analysis=f"API 返回格式异常: {json.dumps(result, ensure_ascii=False)}",
                     missing_info=None,
-                    important_info=None
+                    important_info=None,
                 )
 
         except Exception as e:
@@ -326,5 +343,5 @@ class LLMComparator:
                 category="completely_wrong",
                 analysis=error_msg,
                 missing_info=None,
-                important_info=None
+                important_info=None,
             )

@@ -7,7 +7,6 @@ RAG 语义评测器
 - 改进情况分析
 """
 
-import asyncio
 import httpx
 import json
 import logging
@@ -30,7 +29,9 @@ class SemanticJudge:
     支持评测范围限制和历史回答对比。
     """
 
-    def __init__(self, config: LLMEvalConfig, recorder: Optional["EvalRecorder"] = None):
+    def __init__(
+        self, config: LLMEvalConfig, recorder: Optional["EvalRecorder"] = None
+    ):
         """
         初始化评测器
 
@@ -50,7 +51,7 @@ class SemanticJudge:
         scope: Optional[str] = None,
         ref_answer: Optional[str] = None,
         history_eval: Optional[str] = None,
-        question_index: Optional[int] = None
+        question_index: Optional[int] = None,
     ) -> LLMEvalResult:
         """
         带上下文的 RAG 综合评测
@@ -78,7 +79,7 @@ class SemanticJudge:
                 category="completely_wrong",
                 analysis="LLM 评测未启用或未配置 API Key",
                 missing_info=None,
-                important_info=None
+                important_info=None,
             )
 
         # 构建增强版评测提示词（传递 rerank_sources）
@@ -88,7 +89,7 @@ class SemanticJudge:
             rerank_sources=rerank_sources,
             scope=scope,
             ref_answer=ref_answer,
-            history_eval=history_eval
+            history_eval=history_eval,
         )
 
         # 调用底层 LLM 评测（使用私有方法或扩展接口）
@@ -99,7 +100,7 @@ class SemanticJudge:
             question=question,
             context=rerank_sources,
             actual_answer=actual_answer,
-            question_index=question_index
+            question_index=question_index,
         )
 
     def _build_rag_eval_prompt(
@@ -109,7 +110,7 @@ class SemanticJudge:
         rerank_sources: Optional[str] = None,
         scope: Optional[str] = None,
         ref_answer: Optional[str] = None,
-        history_eval: Optional[str] = None
+        history_eval: Optional[str] = None,
     ) -> str:
         """
         构建 RAG 综合评测提示词
@@ -216,7 +217,7 @@ class SemanticJudge:
         question: Optional[str] = None,
         context: Optional[str] = None,
         actual_answer: Optional[str] = None,
-        question_index: Optional[int] = None
+        question_index: Optional[int] = None,
     ) -> LLMEvalResult:
         """
         直接调用 LLM API 执行评测，绕过 LLMComparator.evaluate() 的 format 逻辑
@@ -242,28 +243,28 @@ class SemanticJudge:
                 category="completely_wrong",
                 analysis="LLM 评测未配置 API Key",
                 missing_info=None,
-                important_info=None
+                important_info=None,
             )
 
         # 直接使用配置的完整 URL，不自动拼接
-        url = self.config.base_url.rstrip('/')
+        url = self.config.base_url.rstrip("/")
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
+            "Authorization": f"Bearer {self.config.api_key}",
         }
-        
+
         # 构建请求 JSON
         if self.config.api_type == "custom_azure":
             data = {
                 "model": self.config.model,
                 "input": [{"role": "user", "content": prompt}],
-                "temperature": self.config.temperature
+                "temperature": self.config.temperature,
             }
         else:
             data = {
                 "model": self.config.model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": self.config.temperature
+                "temperature": self.config.temperature,
             }
 
         # 记录原始响应（初始化为空）
@@ -272,10 +273,7 @@ class SemanticJudge:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    url,
-                    headers=headers,
-                    json=data,
-                    timeout=self.config.timeout
+                    url, headers=headers, json=data, timeout=self.config.timeout
                 )
                 response.raise_for_status()
                 result = response.json()
@@ -284,14 +282,14 @@ class SemanticJudge:
 
             # 提取回答内容（根据配置的 api_type 优先解析，但保持容错）
             content = None
-            
+
             # 如果配置为 custom_azure，优先看 output
             if self.config.api_type == "custom_azure":
                 if "output" in result and len(result["output"]) > 0:
                     output_content = result["output"][0].get("content", [])
                     if output_content and isinstance(output_content, list):
                         content = output_content[0].get("text", "").strip()
-            
+
             # 如果没拿到，或者配置是 standard，看 choices
             if not content:
                 if "choices" in result and len(result["choices"]) > 0:
@@ -325,13 +323,18 @@ class SemanticJudge:
                         question_index=question_index,
                         model=self.config.model,
                         category=parsed_result.category,
-                        is_correct=parsed_result.is_correct
+                        is_correct=parsed_result.is_correct,
                     )
 
                 # 添加改进分析标记（如果有历史信息）
                 if ref_answer or history_eval:
-                    if parsed_result.analysis and "改进对比" not in parsed_result.analysis:
-                        parsed_result.analysis += "\n（改进对比：请参考历史信息手动评估）"
+                    if (
+                        parsed_result.analysis
+                        and "改进对比" not in parsed_result.analysis
+                    ):
+                        parsed_result.analysis += (
+                            "\n（改进对比：请参考历史信息手动评估）"
+                        )
 
                 return parsed_result
             else:
@@ -347,7 +350,7 @@ class SemanticJudge:
                         question_index=question_index,
                         model=self.config.model,
                         category="completely_wrong",
-                        is_correct=False
+                        is_correct=False,
                     )
 
                 return LLMEvalResult(
@@ -356,7 +359,7 @@ class SemanticJudge:
                     analysis=f"API 返回格式异常: {raw_response_json}",
                     missing_info=None,
                     important_info=None,
-                    raw_response=raw_response_json
+                    raw_response=raw_response_json,
                 )
         except Exception as e:
             logger.error(f"LLM 评测请求失败: {e}")
@@ -373,7 +376,7 @@ class SemanticJudge:
                     question_index=question_index,
                     model=self.config.model,
                     category="completely_wrong",
-                    is_correct=False
+                    is_correct=False,
                 )
 
             return LLMEvalResult(
@@ -382,5 +385,5 @@ class SemanticJudge:
                 analysis=f"LLM 评测请求失败: {e}",
                 missing_info=None,
                 important_info=None,
-                raw_response=raw_response_json
+                raw_response=raw_response_json,
             )

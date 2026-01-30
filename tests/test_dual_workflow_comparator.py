@@ -289,7 +289,7 @@ class TestDualWorkflowIntegration:
         # 应该能够解析（正则兼容 Markdown）
         assert result.winner == "llm1"
 
-    def test_parse_response_with_chinese_winner(self, comparator):
+    def test_parse_response_with_chinese_winner(self, llm_eval_config):
         """测试解析中文 winner 值"""
         content = """
 推荐答案：LLM1
@@ -301,6 +301,7 @@ LLM2评价：一般
 推荐理由：选择LLM1
         """
 
+        comparator = DualWorkflowComparator(llm_eval_config)
         result = comparator._parse_comparison_response(
             content, "LLM1", "LLM2", "历史回答"
         )

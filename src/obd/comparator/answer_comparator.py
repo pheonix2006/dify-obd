@@ -51,7 +51,7 @@ class AnswerComparator:
         answer2 = str(answer2).strip().lower()
 
         # 提取answer1中的关键词
-        keywords = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+|[0-9]+', answer1)
+        keywords = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|[0-9]+", answer1)
 
         # 检查这些关键词是否在answer2中出现
         for keyword in keywords:
@@ -61,11 +61,7 @@ class AnswerComparator:
         return False
 
     @staticmethod
-    def compare(
-        expected: str,
-        actual: str,
-        method: str = "auto"
-    ) -> Tuple[bool, str]:
+    def compare(expected: str, actual: str, method: str = "auto") -> Tuple[bool, str]:
         """
         对比答案
 
