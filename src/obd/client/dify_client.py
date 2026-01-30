@@ -8,13 +8,17 @@ from obd.models import WorkflowConfig
 class DifyWorkflowClient:
     """Dify工作流API客户端"""
 
-    def __init__(self, config: WorkflowConfig, client: Optional[httpx.AsyncClient] = None):
+    def __init__(
+        self, config: WorkflowConfig, client: Optional[httpx.AsyncClient] = None
+    ):
         self.config = config
         self.headers = {
-            'Authorization': f'Bearer {config.api_key}',
-            'Content-Type': 'application/json'
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
         }
-        self.client = client or httpx.AsyncClient(headers=self.headers, timeout=config.timeout)
+        self.client = client or httpx.AsyncClient(
+            headers=self.headers, timeout=config.timeout
+        )
         self._is_external_client = client is not None
 
     async def __aenter__(self):
@@ -33,7 +37,7 @@ class DifyWorkflowClient:
         self,
         inputs: Dict[str, Any],
         user: Optional[str] = None,
-        workflow_id: Optional[str] = None
+        workflow_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         执行工作流
@@ -54,7 +58,7 @@ class DifyWorkflowClient:
             "query": list(inputs.values())[0] if inputs else "",
             "inputs": inputs,
             "response_mode": self.config.response_mode,
-            "user": user or self.config.user
+            "user": user or self.config.user,
         }
 
         # 如果提供了workflow_id，添加到payload中
@@ -70,13 +74,13 @@ class DifyWorkflowClient:
                 ext_headers = dict(self.client.headers)
                 headers = {**ext_headers, **self.headers}
 
-            response = await self.client.post(
-                url,
-                json=payload,
-                headers=headers
-            )
+            response = await self.client.post(url, json=payload, headers=headers)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            # 类型断言：确保返回的是字典
+            if not isinstance(result, dict):
+                raise TypeError(f"Expected dict from API, got {type(result).__name__}")
+            return result
         except httpx.HTTPError as e:
             raise Exception(f"API调用失败: {str(e)}")
 
@@ -95,6 +99,10 @@ class DifyWorkflowClient:
         try:
             response = await self.client.get(url, headers=self.headers)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            # 类型断言：确保返回的是字典
+            if not isinstance(result, dict):
+                raise TypeError(f"Expected dict from API, got {type(result).__name__}")
+            return result
         except httpx.HTTPError as e:
             raise Exception(f"获取工作流详情失败: {str(e)}")
