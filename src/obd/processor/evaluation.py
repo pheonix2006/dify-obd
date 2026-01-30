@@ -42,10 +42,7 @@ class EvaluationBranch:
         return True
 
     def evaluate_normal(
-        self,
-        qa: QuestionAnswer,
-        expected_answer: str,
-        actual_answer: str
+        self, qa: QuestionAnswer, expected_answer: str, actual_answer: str
     ) -> QuestionAnswer:
         """
         正常评测模式
@@ -66,9 +63,7 @@ class EvaluationBranch:
 
         if actual_answer and not qa.error:
             is_match, match_type = self.comparator.compare(
-                expected_answer,
-                actual_answer,
-                method=self.comparison_method
+                expected_answer, actual_answer, method=self.comparison_method
             )
             qa.is_correct = is_match
             qa.match_type = match_type
@@ -76,10 +71,7 @@ class EvaluationBranch:
         return qa
 
     def evaluate_feedback(
-        self,
-        qa: QuestionAnswer,
-        actual_answer: str,
-        feedback_answer: str
+        self, qa: QuestionAnswer, actual_answer: str, feedback_answer: str
     ) -> QuestionAnswer:
         """
         异常/反馈模式
@@ -98,7 +90,7 @@ class EvaluationBranch:
         qa.model_output = str(actual_answer) if actual_answer is not None else None
         qa.final_display = str(feedback_answer) if feedback_answer is not None else None
         qa.is_evaluated = False  # 不计入统计
-        qa.is_correct = None  # N/A
+        qa.is_correct = False  # N/A（异常模式不计入统计，使用 False 作为默认值）
         qa.match_type = None
         qa.feedback_answer = feedback_answer
 
@@ -110,7 +102,7 @@ class EvaluationBranch:
         answer_state: Any,
         expected_answer: str,
         actual_answer: str,
-        feedback_answer: Optional[str] = None
+        feedback_answer: Optional[str] = None,
     ) -> QuestionAnswer:
         """
         根据ANSWER_STATE进行分支处理

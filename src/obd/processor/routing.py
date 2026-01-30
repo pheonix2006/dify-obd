@@ -29,18 +29,18 @@ class WorkflowRouting:
         # 处理 None
         if kb_name is None:
             return "null"
-        
+
         # 处理 NaN (float)
         if isinstance(kb_name, float) and kb_name != kb_name:
             return "null"
-            
+
         # 转换为字符串并处理
         kb_str = str(kb_name).strip().lower()
-        
+
         # 处理空字符串或字符串形式的 'nan'
-        if not kb_str or kb_str == 'nan' or kb_str == 'none':
+        if not kb_str or kb_str == "nan" or kb_str == "none":
             return "null"
-            
+
         return kb_str
 
     def get_api_key(self, knowledge_base: Any) -> Optional[str]:
