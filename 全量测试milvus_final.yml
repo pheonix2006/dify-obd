@@ -3,13 +3,13 @@ app:
   icon: 🤖
   icon_background: '#FFEAD5'
   mode: advanced-chat
-  name: 全量测试milvus-2
+  name: 全量测试milvus
   use_icon_as_answer_icon: false
 dependencies:
 - current_identifier: null
   type: marketplace
   value:
-    marketplace_plugin_unique_identifier: langgenius/deepseek:0.0.8@db0962090d930c2e6c4c6ced76d2801ca4b3c5cee350460c4b03088c29b61346
+    marketplace_plugin_unique_identifier: langgenius/azure_openai:0.0.36@c995a18ffe376b9995b88ad91930998b2b4f9f6e02ef6280895ff8a175e0cb8b
     version: null
 kind: app
 version: 0.5.0
@@ -32,9 +32,11 @@ workflow:
       - remote_url
       enabled: false
       fileUploadConfig:
+        attachment_image_file_size_limit: 2
         audio_file_size_limit: 50
         batch_count_limit: 5
         file_size_limit: 15
+        file_upload_limit: 20
         image_file_batch_limit: 10
         image_file_size_limit: 10
         single_chunk_attachment_limit: 10
@@ -123,35 +125,13 @@ workflow:
       targetHandle: target
       type: custom
       zIndex: 0
-    - data:
-        isInLoop: false
-        sourceType: code
-        targetType: llm
-      id: 1767080753260-source-1769512774159-target
-      source: '1767080753260'
-      sourceHandle: source
-      target: '1769512774159'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInLoop: false
-        sourceType: llm
-        targetType: answer
-      id: 1769512774159-source-answer-target
-      source: '1769512774159'
-      sourceHandle: source
-      target: answer
-      targetHandle: target
-      type: custom
-      zIndex: 0
     nodes:
     - data:
         selected: false
         title: 用户输入
         type: start
         variables: []
-      height: 72
+      height: 73
       id: '1766990052285'
       position:
         x: -578.0980780781595
@@ -173,18 +153,14 @@ workflow:
 
           {{#1767080753260.formatted_result#}}
 
-          经过llm1的结果：
+          经过llm的结果：
 
-          {{#1767948011302.text#}}
-
-          经过llm2的结果：
-
-          {{#1769512774159.text#}}'
+          {{#1767948011302.text#}}'
         selected: false
         title: 直接回复
         type: answer
         variables: []
-      height: 175
+      height: 155
       id: answer
       position:
         x: -559.3076633845687
@@ -196,7 +172,7 @@ workflow:
       sourcePosition: right
       targetPosition: left
       type: custom
-      width: 241
+      width: 242
     - data:
         authorization:
           config: null
@@ -207,7 +183,7 @@ workflow:
             key: ''
             type: text
             value: "{\n    \"model\": \"bge-reranker-v2-m3\",\n    \"query\": \"{{#sys.query#}}\"\
-              , \n    \"documents\": {{#17685332783840.body#}},\n    \"top_k\": 5,\n\
+              , \n    \"documents\": {{#17685332783840.body#}},\n    \"top_k\": 20,\n\
               \     \"score_threshold\":0\n}"
           type: json
         headers: ''
@@ -227,7 +203,7 @@ workflow:
         type: http-request
         url: http://host.docker.internal:8000/rerank
         variables: []
-      height: 136
+      height: 137
       id: '1767061470912'
       position:
         x: -217.63129534231055
@@ -239,7 +215,7 @@ workflow:
       sourcePosition: right
       targetPosition: left
       type: custom
-      width: 241
+      width: 242
     - data:
         code: "import json\n\ndef main(rerank_output_body: str) -> dict:\n    # \U0001F3AF\
           \ 核心转换逻辑：仅提取 formatted_result 字段\n    data = json.loads(rerank_output_body)\n\
@@ -259,7 +235,7 @@ workflow:
           - body
           value_type: string
           variable: rerank_output_body
-      height: 51
+      height: 52
       id: '1767080753260'
       position:
         x: -553.0441918200383
@@ -271,15 +247,13 @@ workflow:
       sourcePosition: right
       targetPosition: left
       type: custom
-      width: 241
+      width: 242
     - data:
         context:
           enabled: false
           variable_selector: []
         memory:
-          query_prompt_template: '{{#sys.query#}}
-
-            '
+          query_prompt_template: '{{#sys.query#}}'
           role_prefix:
             assistant: ''
             user: ''
@@ -290,8 +264,8 @@ workflow:
           completion_params:
             temperature: 0.1
           mode: chat
-          name: deepseek-chat
-          provider: langgenius/deepseek/deepseek
+          name: gpt-4o-chatbi
+          provider: langgenius/azure_openai/azure_openai
         prompt_template:
         - id: 35a00827-5b77-46f5-b482-e2e8142e4b32
           role: system
@@ -317,12 +291,12 @@ workflow:
         - id: 503c3219-7d2a-44f6-a2f9-1ac2e5ff928e
           role: user
           text: 问题是：{{#sys.query#}}
-        selected: false
+        selected: true
         title: LLM
         type: llm
         vision:
           enabled: false
-      height: 87
+      height: 88
       id: '1767948011302'
       position:
         x: -217.63129534231055
@@ -330,11 +304,11 @@ workflow:
       positionAbsolute:
         x: -217.63129534231055
         y: 257.8370403343185
-      selected: false
+      selected: true
       sourcePosition: right
       targetPosition: left
       type: custom
-      width: 241
+      width: 242
     - data:
         authorization:
           config: null
@@ -350,8 +324,7 @@ workflow:
 
                       "strategy": "global"
 
-                      "top_k": 5,
-
+                      "top_k": 60,
 
               }'
           type: json
@@ -372,7 +345,7 @@ workflow:
         type: http-request
         url: http://host.docker.internal:8000/search
         variables: []
-      height: 136
+      height: 137
       id: '17685332783840'
       position:
         x: -241.84445330235445
@@ -384,71 +357,9 @@ workflow:
       sourcePosition: right
       targetPosition: left
       type: custom
-      width: 241
-    - data:
-        context:
-          enabled: false
-          variable_selector: []
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-            '
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: true
-            size: 5
-        model:
-          completion_params: {}
-          mode: chat
-          name: deepseek-reasoner
-          provider: langgenius/deepseek/deepseek
-        prompt_template:
-        - id: 369af1c3-0830-4a68-ba29-1fa17d103928
-          role: system
-          text: '你是一个乐于助人的助手。
-
-            使用以下内容作为你所学习的知识，放在<context></context> XML标签内。
-
-            <context>/
-
-            {{#1767080753260.formatted_result#}}
-
-            </context>
-
-            回答用户时：
-
-            如果你不知道，就直说你不知道。如果你在不确定的时候不知道，就寻求澄清。
-
-            避免提及你是从上下文中获取的信息。
-
-            并根据用户问题的语言来回答。
-
-            要求回答全面'
-        - id: 2f9fd793-a231-48cd-a7d7-6ad6c6b06564
-          role: user
-          text: 问题是：{{#sys.query#}}
-        selected: true
-        title: LLM 2
-        type: llm
-        vision:
-          enabled: false
-      height: 87
-      id: '1769512774159'
-      position:
-        x: 14.419064124837888
-        y: 362.8980299448914
-      positionAbsolute:
-        x: 14.419064124837888
-        y: 362.8980299448914
-      selected: true
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 241
+      width: 242
     viewport:
-      x: 661.8871291347076
-      y: 351.6478828636189
-      zoom: 0.6320015492264034
+      x: 457.6786806983749
+      y: 244.5440617377701
+      zoom: 0.48794589773264774
   rag_pipeline_variables: []
